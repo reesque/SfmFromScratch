@@ -166,15 +166,6 @@ class NaiveSIFT:
         c = c[indices]
 
         return x, y, c
-    
-    def compute_dominant_orientation(self, magnitudes, orientations):
-        # Create histogram bins for orientations
-        hist_bins = np.linspace(-np.pi, np.pi, 37)
-        hist, _ = np.histogram(orientations, bins=hist_bins, weights=magnitudes)
-        
-        bin_centers = (hist_bins[:-1] + hist_bins[1:]) / 2
-        dominant_orientation = bin_centers[np.argmax(hist)]
-        return dominant_orientation
 
     def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray, feature_width: int):
         """
@@ -201,13 +192,10 @@ class NaiveSIFT:
             feat_orientations = orient[y - feat_width_half + 1: y + feat_width_half + 1,
                                 x - feat_width_half + 1: x + feat_width_half + 1]
 
-            # Calculate dominant orientation
-            dominant_orientation = self.compute_dominant_orientation(feat_magnitudes, feat_orientations)
-
-            # Adjust orientation to be relative to dominant orientation
-            feat_orientations = (feat_orientations - dominant_orientation)
-
+            # Calculate histogram
+            # 8 bins + 1 since exclusive limit
             hist_bin_edges = np.linspace(-np.pi, np.pi, 9)
+
             wgh = []
 
             # Loop through 4x4 patches
@@ -281,6 +269,71 @@ class ScaleRotInvSIFT(NaiveSIFT):
         self._pyramid_scale_factor = pyramid_scale_factor
         self._pyramid_level = pyramid_level
         super().__init__(image_bw, k, ksize, gaussian_size, sigma, alpha, feature_width)
+    
+    def _compute_dominant_orientation(self, magnitudes, orientations):
+        # Create histogram bins for orientations
+        hist_bins = np.linspace(-np.pi, np.pi, 37)
+        hist, _ = np.histogram(orientations, bins=hist_bins, weights=magnitudes)
+        
+        bin_centers = (hist_bins[:-1] + hist_bins[1:]) / 2
+        dominant_orientation = bin_centers[np.argmax(hist)]
+        return dominant_orientation
+    
+    def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray, feature_width: int):
+        """
+        This function returns the 128-d SIFT features computed at each of the input
+        points
+        """
+        assert image_bw.ndim == 2, 'Image must be grayscale'
+
+        Ix, Iy = self._compute_image_gradients(image_bw)
+        magn = np.sqrt(Ix ** 2 + Iy ** 2)
+        orient = np.arctan2(Iy, Ix)
+
+        fvs = []
+        for coord in range(X.shape[0]):
+            x = X[coord]
+            y = Y[coord]
+
+            # Half for lower lim, half for upper lim
+            feat_width_half = self._feature_width // 2
+
+            # Define 16x16 feature from the given y:x
+            feat_magnitudes = magn[y - feat_width_half + 1: y + feat_width_half + 1,
+                              x - feat_width_half + 1: x + feat_width_half + 1]
+            feat_orientations = orient[y - feat_width_half + 1: y + feat_width_half + 1,
+                                x - feat_width_half + 1: x + feat_width_half + 1]
+
+            # Calculate dominant orientation
+            dominant_orientation = self._compute_dominant_orientation(feat_magnitudes, feat_orientations)
+
+            # Adjust orientation to be relative to dominant orientation
+            feat_orientations = (feat_orientations - dominant_orientation)
+
+            hist_bin_edges = np.linspace(-np.pi, np.pi, 9)
+            wgh = []
+
+            # Loop through 4x4 patches
+            for r in range(4):
+                for c in range(4):
+                    patch_magnitudes = feat_magnitudes[r * 4: (r + 1) * 4, c * 4: (c + 1) * 4]
+                    patch_orientations = feat_orientations[r * 4: (r + 1) * 4, c * 4: (c + 1) * 4]
+
+                    hist_data = np.histogram(patch_orientations.flatten(), bins=hist_bin_edges,
+                                             weights=patch_magnitudes.flatten())
+
+                    wgh.append(hist_data[0])
+
+            # Stack outputs into np array, then reshape it into desire shape
+            wgh = np.vstack(wgh).reshape(128, 1)
+
+            # Normalize and raise to the power of 1/2, RootSIFT
+            wgh_norm = np.linalg.norm(wgh)
+            if wgh_norm > 0:
+                wgh = wgh / wgh_norm
+            fvs.append(np.sqrt(wgh))
+
+        return np.squeeze(np.array(fvs))
 
     def compute(self, image_bw: np.ndarray, k: int):
         scaled_k = int(k / self._pyramid_level)
