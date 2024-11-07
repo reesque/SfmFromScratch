@@ -100,6 +100,15 @@ class SIFT:
         c = c[indices]
 
         return x, y, c
+    
+    def compute_dominant_orientation(self, magnitudes, orientations):
+        # Create histogram bins for orientations
+        hist_bins = np.linspace(-np.pi, np.pi, 37)
+        hist, _ = np.histogram(orientations, bins=hist_bins, weights=magnitudes)
+        
+        bin_centers = (hist_bins[:-1] + hist_bins[1:]) / 2
+        dominant_orientation = bin_centers[np.argmax(hist)]
+        return dominant_orientation
 
     def get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray,
                              feature_width: int = 16) -> np.ndarray:
@@ -141,10 +150,13 @@ class SIFT:
             feat_orientations = orient[y - feat_width_half + 1: y + feat_width_half + 1,
                                 x - feat_width_half + 1: x + feat_width_half + 1]
 
-            # Calculate histogram
-            # 8 bins + 1 since exclusive limit
-            hist_bin_edges = np.linspace(-np.pi, np.pi, 9)
+            # Calculate dominant orientation
+            dominant_orientation = self.compute_dominant_orientation(feat_magnitudes, feat_orientations)
 
+            # Adjust orientation to be relative to dominant orientation
+            feat_orientations = (feat_orientations - dominant_orientation) % (2 * np.pi)
+
+            hist_bin_edges = np.linspace(-np.pi, np.pi, 9)
             wgh = []
 
             # Loop through 4x4 patches
