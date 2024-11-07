@@ -308,3 +308,45 @@ def _show_correspondence_lines(imgA, imgB, X1, Y1, X2, Y2, line_colors=None):
         draw.ellipse((x2 + shiftX - r, y2 - r, x2 + shiftX + r, y2 + r), fill=tuple(dot_color))
         draw.line((x1, y1, x2 + shiftX, y2), fill=tuple(line_color), width=10)
     return _PIL_image_to_numpy_arr(newImg, True)
+
+def _show_correspondence_circles(imgA, imgB, X1, Y1, X2, Y2):
+    """
+    Visualizes corresponding points between two images by plotting circles at
+    each correspondence location. Corresponding points will have the same
+    random color.
+
+    Args:
+        imgA: A numpy array of shape (M,N,3)
+        imgB: A numpy array of shape (D,E,3)
+        x1: A numpy array of shape (k,) containing x-locations of imgA keypoints
+        y1: A numpy array of shape (k,) containing y-locations of imgA keypoints
+        x2: A numpy array of shape (j,) containing x-locations of imgB keypoints
+        y2: A numpy array of shape (j,) containing y-locations of imgB keypoints
+
+    Returns:
+        newImg: A numpy array of shape (max(M,D), N+E, 3)
+    """
+    # CHANGED
+    newImg = _hstack_images(imgA, imgB)
+    newImg = _numpy_arr_to_PIL_image(newImg, True)
+    draw = PIL.ImageDraw.Draw(newImg)
+    shiftX = imgA.shape[1]
+    X1 = X1.astype(int)
+    Y1 = Y1.astype(int)
+    X2 = X2.astype(int)
+    Y2 = Y2.astype(int)
+    r = 10
+    for x1, y1, x2, y2 in zip(X1, Y1, X2, Y2):
+        cur_color = np.random.rand(3) * 255
+        cur_color = (int(cur_color[0]), int(cur_color[1]), int(cur_color[2]))
+        green = (0, 1, 0)
+        draw.ellipse([x1 - r + 1, y1 - r + 1, x1 + r - 1, y1 + r - 1], fill=cur_color, outline=green)
+        draw.ellipse([x2 + shiftX - r + 1, y2 - r + 1, x2 + shiftX + r - 1, y2 + r - 1], fill=cur_color, outline=green)
+
+        # newImg = cv2.circle(newImg, (x1, y1), 10, cur_color, -1, cv2.LINE_AA)
+        # newImg = cv2.circle(newImg, (x1, y1), 10, green, 2, cv2.LINE_AA)
+        # newImg = cv2.circle(newImg, (x2+shiftX, y2), 10, cur_color, -1,
+        #                     cv2.LINE_AA)
+        # newImg = cv2.circle(newImg, (x2+shiftX, y2), 10, green, 2, cv2.LINE_AA)
+
+    return _PIL_image_to_numpy_arr(newImg, True)
