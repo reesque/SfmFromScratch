@@ -205,7 +205,7 @@ class NaiveSIFT:
             dominant_orientation = self.compute_dominant_orientation(feat_magnitudes, feat_orientations)
 
             # Adjust orientation to be relative to dominant orientation
-            feat_orientations = (feat_orientations - dominant_orientation) % (2 * np.pi)
+            feat_orientations = (feat_orientations - dominant_orientation)
 
             hist_bin_edges = np.linspace(-np.pi, np.pi, 9)
             wgh = []
