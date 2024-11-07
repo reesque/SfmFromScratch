@@ -163,3 +163,4 @@ cython_debug/
 
 output/*
 test_data/*
+SIFT_test.ipynb
