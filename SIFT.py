@@ -4,8 +4,21 @@ import cv2
 import numpy as np
 
 
-class SIFT:
-    def __init__(self):
+class NaiveSIFT:
+    def __init__(self, image_bw: np.ndarray, k: int = 2500, ksize: int = 7,
+                 gaussian_size: int = 7, sigma: float = 5, alpha: float = 0.05,
+                 feature_width: int = 16):
+        """
+        Initialize a SIFT descriptor
+
+        Args:
+            k: maximum number of interest points to retrieve
+            ksize: kernel size of the max-pooling operator
+            gaussian_size: size of 2d Gaussian filter
+            sigma: standard deviation of gaussian filter
+            alpha: scalar term in Harris response score
+            feature_width: sift window size
+        """
         self.SOBEL_X_KERNEL = np.array([[-1, 0, 1],
                                         [-2, 0, 2],
                                         [-1, 0, 1]
@@ -16,26 +29,79 @@ class SIFT:
                                         [1, 2, 1]
                                         ]).astype(np.float32)
 
-    def find_harris_interest_points(self, image_bw: np.ndarray, k: int = 2500, ksize: int = 7,
-                                    gaussian_size: int = 7, sigma: float = 5, alpha: float = 0.05,
-                                    window_size: int = 16) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Harris Corner detector
+        self._ksize = ksize
+        self._gaussian_size = gaussian_size
+        self._sigma = sigma
+        self._alpha = alpha
+        self._feature_width = feature_width
+
+        self.compute(image_bw, k)
+
+    def compute(self, image_bw: np.ndarray, k: int):
+        self._X, self._Y, _ = self._find_harris_interest_points(image_bw, k, self._feature_width)
+        self._feature_vec = self._get_SIFT_descriptors(image_bw, self._X, self._Y, self._feature_width)
+
+    def harris_map(self):
+        return self._X, self._Y
+
+    def descriptor(self):
+        return self._feature_vec
+
+    @staticmethod
+    def match_features_ratio_test(features1: np.ndarray, features2: np.ndarray,
+                                  ratio_thresh: float = 0.8) -> Tuple[np.ndarray, np.ndarray]:
+        """ Nearest-neighbor distance ratio feature matching.
+
+        This function does not need to be symmetric (e.g. it can produce different
+        numbers of matches depending on the order of the arguments).
 
         Args:
-            image_bw: array of shape (M,N) containing the grayscale image
-            k: maximum number of interest points to retrieve
-            ksize: kernel size of the max-pooling operator
-            gaussian_size: size of 2d Gaussian filter
-            sigma: standard deviation of gaussian filter
-            alpha: scalar term in Harris response score
-            window_size: sift window size
+            features1: A numpy array of shape (n1,feat_dim) representing one set of
+                features, where feat_dim denotes the feature dimensionality
+            features2: A numpy array of shape (n2,feat_dim) representing a second
+                set of features (n1 not necessarily equal to n2)
+            ratio_thresh: ratio for feature comparison
 
         Returns:
-            x: array of shape (p,) containing x-coordinates of interest points
-            y: array of shape (p,) containing y-coordinates of interest points
-            c: array of dim (p,) containing the strength(confidence) of each
-                interest point where p <= k.
+            matches: A numpy array of shape (k,2), where k is the number of matches.
+                The first column is an index in features1, and the second column is
+                an index in features2
+            confidences: A numpy array of shape (k,) with the real valued confidence
+                for every match
+
+        'matches' and 'confidences' can be empty, e.g., (0x2) and (0x1)
+        """
+
+        a = features1[:, np.newaxis]
+        b = features2[np.newaxis, :]
+        # Using Euclidean dist, sqrt(sum((a - b) ** 2))
+        dists = np.sqrt(np.sum((a - b) ** 2, axis=2))
+
+        matches = []
+        confidences = []
+
+        for d in range(dists.shape[0]):
+            # Sort dists
+            sorted_dists_idx = np.argsort(dists[d])
+
+            closest_idx = sorted_dists_idx[0]
+            second_closest_idx = sorted_dists_idx[1]
+            # Divide the closest dist with the second closest dist
+            if dists[d, second_closest_idx] > 0:
+                nndr = dists[d, closest_idx] / dists[d, second_closest_idx]
+
+                if nndr <= ratio_thresh:
+                    matches.append([d, closest_idx])
+                    confidences.append(nndr)
+
+        matches = np.array(matches)
+        confidences = np.array(confidences)
+
+        return matches, confidences
+
+    def _find_harris_interest_points(self, image_bw: np.ndarray, k: int, feature_width: int):
+        """
+        Harris Corner detector
         """
 
         # Second moment
@@ -44,7 +110,7 @@ class SIFT:
         Iy_square = Iy ** 2
         IxIy = Ix * Iy
 
-        gaussian_kernel = self._generate_gaussian_kernel(gaussian_size, sigma)
+        gaussian_kernel = self._generate_gaussian_kernel(self._gaussian_size, self._sigma)
 
         S_xx = cv2.filter2D(Ix_square, ddepth=-1, kernel=gaussian_kernel, borderType=cv2.BORDER_CONSTANT)
         S_xy = cv2.filter2D(IxIy, ddepth=-1, kernel=gaussian_kernel, borderType=cv2.BORDER_CONSTANT)
@@ -53,13 +119,13 @@ class SIFT:
         det_M = (S_xx * S_yy) - (S_xy ** 2)
         trace_M = S_xx + S_yy
 
-        R_map = det_M - alpha * (trace_M ** 2)
+        R_map = det_M - self._alpha * (trace_M ** 2)
 
         # Max pooling
         Rh, Rw = R_map.shape
 
         # Since the pixel is in the middle of the kernel, we need to distribute half of the pool to each direction
-        ksize_half = ksize // 2
+        ksize_half = self._ksize // 2
 
         R_maxpool = np.zeros(R_map.shape)
 
@@ -84,7 +150,7 @@ class SIFT:
         x = x[sort_filter]
         c = confidences[sort_filter]
 
-        half_window = window_size // 2
+        half_window = feature_width // 2
         img_h, img_w = image_bw.shape
 
         edge_filter = (y >= half_window) & (y < img_h - half_window) & (x >= half_window) & (x < img_w - half_window)
@@ -101,25 +167,10 @@ class SIFT:
 
         return x, y, c
 
-    def get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray,
-                             feature_width: int = 16) -> np.ndarray:
+    def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray, feature_width: int):
         """
         This function returns the 128-d SIFT features computed at each of the input
         points
-
-        Args:
-            image: A numpy array of shape (m,n), the image
-            X: A numpy array of shape (k,), the x-coordinates of interest points
-            Y: A numpy array of shape (k,), the y-coordinates of interest points
-            feature_width: integer representing the local feature width in pixels.
-                You can assume that feature_width will be a multiple of 4 (i.e.,
-                every cell of your local SIFT-like feature will have an integer
-                width and height). This is the initial window size we examine
-                around each keypoint.
-        Returns:
-            fvs: A numpy array of shape (k, feat_dim) representing all feature
-                vectors. "feat_dim" is the feature_dimensionality (e.g., 128 for
-                standard SIFT). These are the computed features.
         """
         assert image_bw.ndim == 2, 'Image must be grayscale'
 
@@ -133,7 +184,7 @@ class SIFT:
             y = Y[coord]
 
             # Half for lower lim, half for upper lim
-            feat_width_half = feature_width // 2
+            feat_width_half = self._feature_width // 2
 
             # Define 16x16 feature from the given y:x
             feat_magnitudes = magn[y - feat_width_half + 1: y + feat_width_half + 1,
@@ -148,10 +199,10 @@ class SIFT:
             wgh = []
 
             # Loop through 4x4 patches
-            for y in range(4):
-                for x in range(4):
-                    patch_magnitudes = feat_magnitudes[y * 4: (y + 1) * 4, x * 4: (x + 1) * 4]
-                    patch_orientations = feat_orientations[y * 4: (y + 1) * 4, x * 4: (x + 1) * 4]
+            for r in range(4):
+                for c in range(4):
+                    patch_magnitudes = feat_magnitudes[r * 4: (r + 1) * 4, c * 4: (c + 1) * 4]
+                    patch_orientations = feat_orientations[r * 4: (r + 1) * 4, c * 4: (c + 1) * 4]
 
                     hist_data = np.histogram(patch_orientations.flatten(), bins=hist_bin_edges,
                                              weights=patch_magnitudes.flatten())
@@ -167,17 +218,7 @@ class SIFT:
                 wgh = wgh / wgh_norm
             fvs.append(np.sqrt(wgh))
 
-        fvs = np.squeeze(np.array(fvs))
-
-        return fvs
-
-    def _build_image_pyramid(self, image_bw: np.ndarray, num_levels: int = 4, scale_factor: float = 2):
-        """Create an image pyramid with specified number of levels."""
-        pyramid = [image_bw]
-        for i in range(1, num_levels):
-            pyramid.append(cv2.resize(image_bw, (pyramid[0][0] * (scale_factor**i), pyramid[0][1] * (scale_factor**i))))
-
-        return pyramid
+        return np.squeeze(np.array(fvs))
 
     def _generate_gaussian_kernel(self, ksize: int, sigma: float) -> np.ndarray:
         """Create a numpy matrix representing a 2d Gaussian kernel
@@ -209,9 +250,6 @@ class SIFT:
         """Use convolution with Sobel filters to compute the image gradient at each
         pixel.
 
-        Args:
-            image_bw: A numpy array of shape (M,N) containing the grayscale image
-
         Returns:
             Ix: Array of shape (M,N) representing partial derivatives of image
                 w.r.t. x-direction
@@ -221,3 +259,40 @@ class SIFT:
 
         return (cv2.filter2D(image_bw, ddepth=-1, kernel=self.SOBEL_X_KERNEL, borderType=cv2.BORDER_CONSTANT),
                 cv2.filter2D(image_bw, ddepth=-1, kernel=self.SOBEL_Y_KERNEL, borderType=cv2.BORDER_CONSTANT))
+
+
+class ScaleRotInvSIFT(NaiveSIFT):
+    def __init__(self, image_bw: np.ndarray, k: int = 2500, ksize: int = 7,
+                 gaussian_size: int = 7, sigma: float = 5, alpha: float = 0.05,
+                 feature_width: int = 16, pyramid_level: int = 4, pyramid_scale_factor: float = 2):
+        self._build_image_pyramid(image_bw, pyramid_level, pyramid_scale_factor)
+        self._pyramid_scale_factor = pyramid_scale_factor
+        self._pyramid_level = pyramid_level
+        super().__init__(image_bw, k, ksize, gaussian_size, sigma, alpha, feature_width)
+
+    def compute(self, image_bw: np.ndarray, k: int):
+        scaled_k = int(k / self._pyramid_level)
+        self._X, self._Y, self._feature_vec = [], [], []
+
+        for level, scaled_image in enumerate(self._img_pyramid):
+            scale = self._pyramid_scale_factor ** level
+            scaled_feature_width = int(self._feature_width / scale)
+
+            x, y, _ = self._find_harris_interest_points(scaled_image, scaled_k, scaled_feature_width)
+            feat = self._get_SIFT_descriptors(scaled_image, x, y, scaled_feature_width)
+
+            self._X.extend((x * scale).astype(int))
+            self._Y.extend((y * scale).astype(int))
+            self._feature_vec.extend(feat)
+
+        self._X = np.array(self._X)
+        self._Y = np.array(self._Y)
+        self._feature_vec = np.array(self._feature_vec)
+
+    def _build_image_pyramid(self, image_bw: np.ndarray, num_levels: int, scale_factor: float):
+        """Create an image pyramid with specified number of levels."""
+        self._img_pyramid = [image_bw]
+        for i in range(1, num_levels):
+            self._img_pyramid.append(
+                cv2.resize(self._img_pyramid[i - 1], (int(self._img_pyramid[i - 1].shape[0] / (scale_factor ** i)),
+                                                      int(self._img_pyramid[i - 1].shape[1] / (scale_factor ** i)))))
