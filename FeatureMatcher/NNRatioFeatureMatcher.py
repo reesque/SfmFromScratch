@@ -5,9 +5,7 @@ class NNRatioFeatureMatcher:
     def __init__(self, ratio_threshold=0.8):
         self.ratio_threshold = ratio_threshold
 
-    @staticmethod
-    def match_features_ratio_test(features1: np.ndarray, features2: np.ndarray,
-                                  ratio_thresh: float = 0.8) -> Tuple[np.ndarray, np.ndarray]:
+    def match_features_ratio_test(self, features1: np.ndarray, features2: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """ Nearest-neighbor distance ratio feature matching.
 
         This function does not need to be symmetric (e.g. it can produce different
@@ -48,7 +46,7 @@ class NNRatioFeatureMatcher:
             if dists[d, second_closest_idx] > 0:
                 nndr = dists[d, closest_idx] / dists[d, second_closest_idx]
 
-                if nndr <= ratio_thresh:
+                if nndr <= self.ratio_threshold:
                     matches.append([d, closest_idx])
                     confidences.append(nndr)
 
