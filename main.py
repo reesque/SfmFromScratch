@@ -1,11 +1,14 @@
 import matplotlib
-from runner import SIFTRunner
+from runner import FeatureRunner
 from sys import platform
-from SIFT import ScaleRotInvSIFT
+from FeatureExtractor import ScaleRotInvSIFT, NaiveSIFT
 
 
 def main():
-    SIFTRunner("test_data/a.jpg", "test_data/b.jpg", sift_model=ScaleRotInvSIFT, print_img=True, print_harris=True, print_sift=True)
+    FeatureRunner("test_data/a.jpg", "test_data/b.jpg", feature_extractor_class=NaiveSIFT, 
+                  print_img=True, print_features=True, print_matches=True)
+    #featureRunner.print_features()
+    #featureRunner.print_image()
 
 
 if __name__ == "__main__":
