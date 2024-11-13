@@ -7,19 +7,18 @@ from FeatureExtractor import iFeatureExtractor
 
 
 class NaiveSIFT(iFeatureExtractor):
-    def __init__(self, image_bw: np.ndarray, k: int = 2500, ksize: int = 7,
-                 gaussian_size: int = 7, sigma: float = 5, alpha: float = 0.05,
-                 feature_width: int = 16):
+    def __init__(self, image_bw: np.ndarray, extractor_params: dict = {}):
         """
         Initialize a SIFT descriptor
 
         Args:
-            k: maximum number of interest points to retrieve
-            ksize: kernel size of the max-pooling operator
-            gaussian_size: size of 2d Gaussian filter
-            sigma: standard deviation of gaussian filter
-            alpha: scalar term in Harris response score
-            feature_width: sift window size
+            image_bw: Grayscale image
+            extractor_params: Dictionary containing the following optional parameters:
+                ksize: Size of the kernel for Harris corner detection
+                gaussian_size: Size of the Gaussian kernel for smoothing
+                sigma: Standard deviation of the Gaussian kernel
+                alpha: Harris corner detection parameter
+                feature_width: Width of the feature window
         """
         self.SOBEL_X_KERNEL = np.array([[-1, 0, 1],
                                         [-2, 0, 2],
@@ -30,18 +29,19 @@ class NaiveSIFT(iFeatureExtractor):
                                         [0, 0, 0],
                                         [1, 2, 1]
                                         ]).astype(np.float32)
+        
+        super().__init__(image_bw, extractor_params)
+        
+        self._ksize = extractor_params.get('ksize', 7)
+        self._gaussian_size = extractor_params.get('gaussian_size', 7)
+        self._sigma = extractor_params.get('sigma', 5)
+        self._alpha = extractor_params.get('alpha', 0.05)
+        self._feature_width = extractor_params.get('feature_width', 16)
 
-        self.image = image_bw
-        self._ksize = ksize
-        self._gaussian_size = gaussian_size
-        self._sigma = sigma
-        self._alpha = alpha
-        self._feature_width = feature_width
-        self._k = k
 
     def detect_keypoints(self) -> Tuple[np.ndarray, np.ndarray]:
         """Detect interest points using Harris corner detection."""
-        self._X, self._Y, self.confidences = self._find_harris_interest_points(self.image, self._k, self._feature_width)
+        self._X, self._Y, self.confidences = self._find_harris_interest_points(self.image, self.num_interest_points, self._feature_width)
         return self._X, self._Y
     
     def extract_descriptors(self) -> np.ndarray:

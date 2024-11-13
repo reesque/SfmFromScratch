@@ -6,14 +6,14 @@ import numpy as np
 from FeatureExtractor import NaiveSIFT
 
 class ScaleRotInvSIFT(NaiveSIFT):
-    def __init__(self, image_bw: np.ndarray, k: int = 2500, ksize: int = 7,
-                 gaussian_size: int = 7, sigma: float = 5, alpha: float = 0.05,
-                 feature_width: int = 16, pyramid_level: int = 4, pyramid_scale_factor: float = 2):
-        super().__init__(image_bw, k, ksize, gaussian_size, sigma, alpha, feature_width)
-        self._pyramid_level = pyramid_level
-        self._pyramid_scale_factor = pyramid_scale_factor
-        self._build_image_pyramid(self.image, pyramid_level, pyramid_scale_factor)
-        self.compute(image_bw, k)
+    def __init__(self, image_bw: np.ndarray, extractor_params: dict = {}):
+        super().__init__(image_bw, extractor_params)
+        
+        self._pyramid_level = extractor_params.get('pyramid_level', 4)
+        self._pyramid_scale_factor = extractor_params.get('pyramid_scale_factor', 2)
+        
+        self._build_image_pyramid(self.image, self._pyramid_level, self._pyramid_scale_factor)
+        self.compute(image_bw, self.num_interest_points)
     
     def detect_keypoints(self):
         return self._X, self._Y
@@ -30,7 +30,7 @@ class ScaleRotInvSIFT(NaiveSIFT):
         dominant_orientation = bin_centers[np.argmax(hist)]
         return dominant_orientation
     
-    def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray, feature_width: int):
+    def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray):
         """
         This function returns the 128-d SIFT features computed at each of the input
         points

@@ -12,16 +12,18 @@ from FeatureMatcher import NNRatioFeatureMatcher
 
 
 class FeatureRunner:
-    def __init__(self, im1_path: str, im2_path: str, feature_extractor_class: iFeatureExtractor, num_interest_points: int = 2500,
-                 scale_factor: float = 0.5, print_img: bool = False, print_features: bool = False, print_matches: bool = False, 
-                 **extractor_params):
+    def __init__(self, im1_path: str, im2_path: str, scale_factor: float = 0.5,
+                 feature_extractor_class: iFeatureExtractor = None, extractor_params: dict = {}, 
+                 print_img: bool = False, print_features: bool = False, print_matches: bool = False):
         self.feature_extractor = feature_extractor_class
+
+        if self.feature_extractor is None:
+            raise ValueError("Please provide a feature extractor class")
 
         self._image1 = _load_image(im1_path)
         self._image2 = _load_image(im2_path)
 
         # Rescale images if desired
-        scale_factor = 0.5
         self._image1 = _PIL_resize(self._image1,
                                    (int(self._image1.shape[1] * scale_factor),
                                     int(self._image1.shape[0] * scale_factor)))
@@ -34,8 +36,8 @@ class FeatureRunner:
         self._image2_bw = _rgb2gray(self._image2)
 
         # Initialize feature extractor for each image
-        self.extractor1 = self.feature_extractor(self._image1_bw, k=num_interest_points, **extractor_params)
-        self.extractor2 = self.feature_extractor(self._image2_bw, k=num_interest_points, **extractor_params)
+        self.extractor1 = self.feature_extractor(self._image1_bw, extractor_params)
+        self.extractor2 = self.feature_extractor(self._image2_bw, extractor_params)
 
         # Extract features
         self.X1, self.Y1 = self.extractor1.detect_keypoints()
@@ -47,7 +49,7 @@ class FeatureRunner:
         print(f'{len(self.descriptors1)} descriptors in image 1, {len(self.descriptors2)} descriptors in image 2')
 
         # Match features
-        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.7)
+        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.85)
         self.matches, self.confidences = self.matcher.match_features_ratio_test(self.descriptors1, self.descriptors2)
 
         print(f'{len(self.matches)} matches found')
@@ -69,6 +71,9 @@ class FeatureRunner:
         plt.savefig('output/visual.png')
 
     def print_features(self):
+        if len(self.X1) == 0 or len(self.X2) == 0:
+            print('No interest points to visualize')
+            return
         num_pts_to_visualize = 300
         rendered_img1 = _show_interest_points(self._image1, self.X1[:num_pts_to_visualize], self.Y1[:num_pts_to_visualize])
         rendered_img2 = _show_interest_points(self._image2, self.X2[:num_pts_to_visualize], self.Y2[:num_pts_to_visualize])
@@ -81,6 +86,9 @@ class FeatureRunner:
         plt.savefig('output/features.png')
     
     def print_matches(self):
+        if len(self.matches) == 0:
+            print('No matches to visualize')
+            return
         num_pts_to_visualize = 2500
         c2 = _show_correspondence_lines(
             self._image1,

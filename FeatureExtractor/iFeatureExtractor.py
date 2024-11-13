@@ -2,11 +2,11 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 class iFeatureExtractor(ABC):
-    """Interface for feature extractor classes."""
+    """Interface for feature extractor classes (on images)."""
     
-    def __init__(self, image: np.ndarray, num_interest_points: int = 2500):
+    def __init__(self, image: np.ndarray, extractor_params: dict = {}):
         self.image = image
-        self.num_interest_points = num_interest_points
+        self.num_interest_points = extractor_params.get('num_interest_points', 2500)
     
     @abstractmethod
     def detect_keypoints(self) -> np.ndarray:
