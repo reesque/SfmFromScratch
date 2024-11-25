@@ -3,10 +3,10 @@ from typing import Tuple
 import cv2
 import numpy as np
 
-from FeatureExtractor import iFeatureExtractor
+from FeatureExtractor import FeatureExtractor
 
 
-class NaiveSIFT(iFeatureExtractor):
+class NaiveSIFT(FeatureExtractor):
     def __init__(self, image_bw: np.ndarray, extractor_params: dict = {}):
         """
         Initialize a SIFT descriptor

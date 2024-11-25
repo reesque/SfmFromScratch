@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-class iFeatureExtractor(ABC):
+class FeatureExtractor(ABC):
     """Interface for feature extractor classes (on images)."""
     
     def __init__(self, image: np.ndarray, extractor_params: dict = {}):

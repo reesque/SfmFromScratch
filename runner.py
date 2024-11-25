@@ -7,13 +7,13 @@ from typing import Tuple
 import numpy as np
 import PIL
 from PIL import Image, ImageDraw
-from FeatureExtractor import iFeatureExtractor
+from FeatureExtractor import FeatureExtractor
 from FeatureMatcher import NNRatioFeatureMatcher
 
 
 class FeatureRunner:
     def __init__(self, im1_path: str, im2_path: str, scale_factor: float = 0.5,
-                 feature_extractor_class: iFeatureExtractor = None, extractor_params: dict = {}, 
+                 feature_extractor_class: FeatureExtractor = None, extractor_params: dict = {}, 
                  print_img: bool = False, print_features: bool = False, print_matches: bool = False):
         self.feature_extractor = feature_extractor_class
 
