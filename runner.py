@@ -7,19 +7,23 @@ from typing import Tuple
 import numpy as np
 import PIL
 from PIL import Image, ImageDraw
-from SIFT import NaiveSIFT
+from FeatureExtractor import FeatureExtractor
+from FeatureMatcher import NNRatioFeatureMatcher
 
 
-class SIFTRunner:
-    def __init__(self, im1_path: str, im2_path: str, sift_model=NaiveSIFT, num_interest_points: int = 2500,
-                 print_img: bool = False,
-                 print_harris: bool = False, print_sift: bool = False):
-        self.sift_model = sift_model
+class FeatureRunner:
+    def __init__(self, im1_path: str, im2_path: str, scale_factor: float = 0.5,
+                 feature_extractor_class: FeatureExtractor = None, extractor_params: dict = {}, 
+                 print_img: bool = False, print_features: bool = False, print_matches: bool = False):
+        self.feature_extractor = feature_extractor_class
+
+        if self.feature_extractor is None:
+            raise ValueError("Please provide a feature extractor class")
 
         self._image1 = _load_image(im1_path)
         self._image2 = _load_image(im2_path)
 
-        scale_factor = 0.5
+        # Rescale images if desired
         self._image1 = _PIL_resize(self._image1,
                                    (int(self._image1.shape[1] * scale_factor),
                                     int(self._image1.shape[0] * scale_factor)))
@@ -27,21 +31,36 @@ class SIFTRunner:
                                    (int(self._image2.shape[1] * scale_factor),
                                     int(self._image2.shape[0] * scale_factor)))
 
+        # Convert images to grayscale
         self._image1_bw = _rgb2gray(self._image1)
         self._image2_bw = _rgb2gray(self._image2)
 
-        self._sift1 = sift_model(self._image1_bw, k=num_interest_points)
-        self._sift2 = sift_model(self._image2_bw, k=num_interest_points)
-        self._harris_corner_det()
-        self._sift()
+        # Initialize feature extractor for each image
+        self.extractor1 = self.feature_extractor(self._image1_bw, extractor_params)
+        self.extractor2 = self.feature_extractor(self._image2_bw, extractor_params)
+
+        # Extract features
+        self.X1, self.Y1 = self.extractor1.detect_keypoints()
+        self.descriptors1 = self.extractor1.extract_descriptors()
+        self.X2, self.Y2 = self.extractor2.detect_keypoints()
+        self.descriptors2 = self.extractor2.extract_descriptors()
+
+        print(f'{len(self.X1)} corners in image 1, {len(self.X2)} corners in image 2')
+        print(f'{len(self.descriptors1)} descriptors in image 1, {len(self.descriptors2)} descriptors in image 2')
+
+        # Match features
+        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.85)
+        self.matches, self.confidences = self.matcher.match_features_ratio_test(self.descriptors1, self.descriptors2)
+
+        print(f'{len(self.matches)} matches found')
 
         # Optional printing
         if print_img:
             self.print_image()
-        if print_harris:
-            self.print_harris()
-        if print_sift:
-            self.print_sift()
+        if print_features:
+            self.print_features()
+        if print_matches:
+            self.print_matches()
 
     def print_image(self):
         plt.figure(figsize=(12, 6))
@@ -51,52 +70,72 @@ class SIFTRunner:
         plt.imshow(self._image2)
         plt.savefig('output/visual.png')
 
-    def print_harris(self):
+    def print_features(self):
+        if len(self.X1) == 0 or len(self.X2) == 0:
+            print('No interest points to visualize')
+            return
         num_pts_to_visualize = 300
-        # Visualize the interest points
-        rendered_img1 = _show_interest_points(self._image1, self.X1[:num_pts_to_visualize],
-                                              self.Y1[:num_pts_to_visualize])
-        rendered_img2 = _show_interest_points(self._image2, self.X2[:num_pts_to_visualize],
-                                              self.Y2[:num_pts_to_visualize])
-        plt.figure(figsize=(10, 5))
-        plt.subplot(1, 2, 1);
-        plt.imshow(rendered_img1, cmap='gray')
-        plt.subplot(1, 2, 2);
-        plt.imshow(rendered_img2, cmap='gray')
-        print(f'{len(self.X1)} corners in image 1, {len(self.X2)} corners in image 2')
-        plt.savefig('output/harris.png')
+        rendered_img1 = _show_interest_points(self._image1, self.X1[:num_pts_to_visualize], self.Y1[:num_pts_to_visualize])
+        rendered_img2 = _show_interest_points(self._image2, self.X2[:num_pts_to_visualize], self.Y2[:num_pts_to_visualize])
 
-    def print_sift(self):
-        # num_pts_to_visualize = len(matches)
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.imshow(rendered_img1, cmap='gray')
+        plt.subplot(1, 2, 2)
+        plt.imshow(rendered_img2, cmap='gray')
+        plt.savefig('output/features.png')
+    
+    def print_matches(self):
+        if len(self.matches) == 0:
+            print('No matches to visualize')
+            return
         num_pts_to_visualize = 2500
         c2 = _show_correspondence_lines(
             self._image1,
             self._image2,
-            self.X1[self.sift_matches[:num_pts_to_visualize, 0]],
-            self.Y1[self.sift_matches[:num_pts_to_visualize, 0]],
-            self.X2[self.sift_matches[:num_pts_to_visualize, 1]],
-            self.Y2[self.sift_matches[:num_pts_to_visualize, 1]]
+            self.X1[self.matches[:num_pts_to_visualize, 0]],
+            self.Y1[self.matches[:num_pts_to_visualize, 0]],
+            self.X2[self.matches[:num_pts_to_visualize, 1]],
+            self.Y2[self.matches[:num_pts_to_visualize, 1]]
         )
         plt.figure(figsize=(10, 5))
         plt.imshow(c2)
         _save_image('output/vis_lines.jpg', c2)
 
-    def _harris_corner_det(self):
-        self.X1, self.Y1 = self._sift1.harris_map()
-        self.X2, self.Y2 = self._sift2.harris_map()
-
-    def _sift(self):
-        self.image1_features = self._sift1.descriptor()
-        self.image2_features = self._sift2.descriptor()
-
-        self.sift_matches, self.sift_confidences = self.sift_model.match_features_ratio_test(self.image1_features,
-                                                                                             self.image2_features)
-        print('{:d} matches from {:d} corners'.format(len(self.sift_matches), len(self.X1)))
-
 
 ###############
 ### HELPERS ###
 ###############
+
+def print_sift_matches(image1, image2, keypoints1, keypoints2, matches, output_path="output/sift_matches.png"):
+    plt.figure(figsize=(10, 5))
+    matched_img = _show_correspondence_lines(image1, image2, 
+                                             [kp.pt for kp in keypoints1], 
+                                             [kp.pt for kp in keypoints2], 
+                                             matches)
+    plt.imshow(matched_img)
+    plt.savefig(output_path)
+    print(f"Saved SIFT matches to {output_path}")
+
+
+def _show_interest_points(img, keypoints):
+    img = img.copy()
+    img = Image.fromarray((img * 255).astype('uint8'))
+    draw = ImageDraw.Draw(img)
+    for kp in keypoints:
+        x, y = int(kp[0]), int(kp[1])
+        draw.ellipse((x - 5, y - 5, x + 5, y + 5), outline="red", width=2)
+    return np.array(img) / 255
+
+
+def print_harris_corners(image, keypoints, output_path="output/harris_corners.png"):
+    num_pts_to_visualize = min(300, len(keypoints))
+    rendered_img = _show_interest_points(image, keypoints[:num_pts_to_visualize])
+    
+    plt.figure(figsize=(6, 6))
+    plt.imshow(rendered_img, cmap='gray')
+    plt.savefig(output_path)
+
 
 def _rgb2gray(img: np.ndarray) -> np.ndarray:
     """Use the coefficients used in OpenCV, found here:

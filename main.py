@@ -1,11 +1,25 @@
 import matplotlib
-from runner import SIFTRunner
+from runner import FeatureRunner
 from sys import platform
-from SIFT import ScaleRotInvSIFT
+from FeatureExtractor import ScaleRotInvSIFT, NaiveSIFT
 
 
 def main():
-    SIFTRunner("test_data/a.jpg", "test_data/b.jpg", sift_model=ScaleRotInvSIFT, print_img=True, print_harris=True, print_sift=True)
+    extractor_params = {
+        'num_interest_points': 2500,
+        'ksize': 7,
+        'gaussian_size': 7,
+        'sigma': 5,
+        'alpha': 0.05,
+        'feature_width': 16,
+        'pyramid_level': 4,
+        'pyramid_scale_factor': 2
+    }
+
+    FeatureRunner("test_data/a.jpg", "test_data/b.jpg", 
+                  feature_extractor_class=NaiveSIFT, extractor_params=extractor_params, 
+                  print_img=True, print_features=True, print_matches=True)
+    
 
 
 if __name__ == "__main__":
