@@ -17,7 +17,7 @@ def main():
     }
 
     FeatureRunner("test_data/a.jpg", "test_data/b.jpg", 
-                  feature_extractor_class=NaiveSIFT, extractor_params=extractor_params, 
+                  feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params, 
                   print_img=True, print_features=True, print_matches=True)
     
 

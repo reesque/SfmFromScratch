@@ -136,7 +136,7 @@ class NaiveSIFT(FeatureExtractor):
             y = Y[coord]
 
             # Half for lower lim, half for upper lim
-            feat_width_half = self._feature_width // 2
+            feat_width_half = feature_width // 2
 
             # Define 16x16 feature from the given y:x
             feat_magnitudes = magn[y - feat_width_half + 1: y + feat_width_half + 1,

@@ -30,7 +30,7 @@ class ScaleRotInvSIFT(NaiveSIFT):
         dominant_orientation = bin_centers[np.argmax(hist)]
         return dominant_orientation
     
-    def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray):
+    def _get_SIFT_descriptors(self, image_bw: np.ndarray, X: np.ndarray, Y: np.ndarray, feature_width: int):
         """
         This function returns the 128-d SIFT features computed at each of the input
         points
@@ -47,7 +47,7 @@ class ScaleRotInvSIFT(NaiveSIFT):
             y = Y[coord]
 
             # Half for lower lim, half for upper lim
-            feat_width_half = self._feature_width // 2
+            feat_width_half = feature_width // 2
 
             # Define 16x16 feature from the given y:x
             feat_magnitudes = magn[y - feat_width_half + 1: y + feat_width_half + 1,
