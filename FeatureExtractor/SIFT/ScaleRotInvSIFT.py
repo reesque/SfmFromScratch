@@ -13,7 +13,7 @@ class ScaleRotInvSIFT(NaiveSIFT):
         self._pyramid_scale_factor = extractor_params.get('pyramid_scale_factor', 2)
         
         self._build_image_pyramid(self.image, self._pyramid_level, self._pyramid_scale_factor)
-        self.compute(image_bw, self.num_interest_points)
+        self.compute(self.num_interest_points)
     
     def detect_keypoints(self):
         return self._X, self._Y
@@ -86,13 +86,14 @@ class ScaleRotInvSIFT(NaiveSIFT):
 
         return np.squeeze(np.array(fvs))
 
-    def compute(self, image_bw: np.ndarray, k: int):
+    def compute(self, k: int):
         scaled_k = int(k / self._pyramid_level)
         self._X, self._Y, self._feature_vec = [], [], []
+        min_feature_width = 3
 
         for level, scaled_image in enumerate(self._img_pyramid):
             scale = self._pyramid_scale_factor ** level
-            scaled_feature_width = int(self._feature_width / scale)
+            scaled_feature_width = max(int(self._feature_width / scale), min_feature_width)
 
             x, y, _ = self._find_harris_interest_points(scaled_image, scaled_k, scaled_feature_width)
             feat = self._get_SIFT_descriptors(scaled_image, x, y, scaled_feature_width)
@@ -110,5 +111,5 @@ class ScaleRotInvSIFT(NaiveSIFT):
         self._img_pyramid = [image_bw]
         for i in range(1, num_levels):
             self._img_pyramid.append(
-                cv2.resize(self._img_pyramid[i - 1], (int(self._img_pyramid[i - 1].shape[0] / (scale_factor ** i)),
-                                                      int(self._img_pyramid[i - 1].shape[1] / scale_factor ** i))))
+                cv2.resize(self._img_pyramid[i - 1], (int(self._img_pyramid[i - 1].shape[1] / scale_factor),
+                                                      int(self._img_pyramid[i - 1].shape[0] / scale_factor))))

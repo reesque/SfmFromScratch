@@ -12,8 +12,8 @@ def main():
         'sigma': 5,
         'alpha': 0.05,
         'feature_width': 16,
-        'pyramid_level': 4,
-        'pyramid_scale_factor': 2
+        'pyramid_level': 3,
+        'pyramid_scale_factor': 1.2
     }
 
     FeatureRunner("test_data/a.jpg", "test_data/b.jpg", 

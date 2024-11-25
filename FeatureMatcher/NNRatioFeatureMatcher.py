@@ -53,4 +53,8 @@ class NNRatioFeatureMatcher:
         matches = np.array(matches)
         confidences = np.array(confidences)
 
+        sorted_indices = np.argsort(confidences)
+        matches = matches[sorted_indices]
+        confidences = confidences[sorted_indices]
+
         return matches, confidences
