@@ -51,7 +51,7 @@ class FeatureRunner:
         print(f'{len(self.descriptors1)} descriptors in image 1, {len(self.descriptors2)} descriptors in image 2')
 
         # Match features
-        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.85)
+        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.8)
         self.matches, self.confidences = self.matcher.match_features_ratio_test(self.descriptors1, self.descriptors2)
 
         print(f'{len(self.matches)} matches found')
