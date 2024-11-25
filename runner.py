@@ -8,7 +8,9 @@ import numpy as np
 import PIL
 from PIL import Image, ImageDraw
 from FeatureExtractor import FeatureExtractor
+from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 from FeatureMatcher import NNRatioFeatureMatcher
+from SFM import CameraPose
 
 
 class FeatureRunner:
@@ -102,10 +104,53 @@ class FeatureRunner:
         plt.imshow(c2)
         _save_image('output/vis_lines.jpg', c2)
 
+class SFMRunner:
+    def __init__(self):
+        extractor_params = {
+            'num_interest_points': 2500,
+            'ksize': 7,
+            'gaussian_size': 7,
+            'sigma': 5,
+            'alpha': 0.05,
+            'feature_width': 16,
+            'pyramid_level': 4,
+            'pyramid_scale_factor': 2
+        }
+
+        for i1 in range(1, 6):
+            for i2 in range(1, 7):
+                srunner = FeatureRunner("test_data/buddha_mini/{}.png".format(i1), "test_data/buddha_mini/{}.png".format(i2),
+                                        feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params)
+                p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
+                cam_pose = CameraPose(p1, p2)
+
+                if len(srunner.matches) < 40:
+                    print("{} {} Not enough matches".format(i1, i2))
+                    return
+
+                R, T = cam_pose.ransac_camera_motion()
+                if R is None:
+                    print("{} {} No valid config".format(i1, i2))
+                    return
+
+                R1 = np.eye(3)
+                t1 = np.zeros(3)
+
+                points_3d = [CameraPose.triangulate_point(pts1, pts2, R1, t1, R, T) for pts1, pts2 in zip(p1, p2)]
 
 ###############
 ### HELPERS ###
 ###############
+
+def _convert_matches_to_coords(sift_matches, X1, Y1, X2, Y2, num_matches=2500):
+    # Extract the first num_matches matches
+    match_indices = sift_matches[:num_matches]
+
+    # Extract coordinates using match indices
+    pts1 = np.column_stack((X1[match_indices[:, 0]], Y1[match_indices[:, 0]]))
+    pts2 = np.column_stack((X2[match_indices[:, 1]], Y2[match_indices[:, 1]]))
+
+    return pts1, pts2
 
 def print_sift_matches(image1, image2, keypoints1, keypoints2, matches, output_path="output/sift_matches.png"):
     plt.figure(figsize=(10, 5))
