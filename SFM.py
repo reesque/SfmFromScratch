@@ -274,12 +274,11 @@ class CameraPose:
             return None, None
 
         # SolvePnP with RANSAC to handle outliers
-        success, rvec, tvec, _ = cv2.solvePnPRansac(
+        success, rvec, tvec = cv2.solvePnP(
             objectPoints=pts_3d,  # 3D points in world space
             imagePoints=pts_2d,  # 2D points in image space
             cameraMatrix=K,  # Intrinsic camera matrix
             distCoeffs=dist_coeffs,  # Distortion coefficients (None if undistorted)
-            reprojectionError=5.0,
             flags=cv2.SOLVEPNP_ITERATIVE  # Standard iterative approach
         )
 

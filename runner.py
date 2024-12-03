@@ -128,7 +128,7 @@ class SFMRunner:
         next_frame_point_dist_thresh = 5.0
 
         # How many images should be used from img_path, for ease of testing
-        max_img = 3
+        max_img = 4
 
         self.global_poses = []
         self.global_points_3D = []
@@ -240,6 +240,7 @@ class SFMRunner:
             self.processed_pairs.add(best_pair)
             self.processed_pairs.add((best_pair[1], best_pair[0]))
             if R3 is None:
+                print("Cannot determine Pose")
                 continue
 
             # Set current frame as prev frame to prepare for next iteration
@@ -284,28 +285,6 @@ class SFMRunner:
         # Plot 3D points
         points_3d = np.array(self.global_points_3D)
         ax.scatter(points_3d[:, 0], points_3d[:, 1], points_3d[:, 2], c='blue', s=0.5, label='3D Points')
-
-        # Plot camera positions
-        for i, (R, t) in enumerate(self.global_poses):
-            # Camera position in world coordinates
-            R, _ = cv2.Rodrigues(R)
-            camera_position = -np.dot(R.T, t)
-            ax.scatter(camera_position[0], camera_position[1], camera_position[2], c='red', s=50, marker='o',
-                       label=f'Camera {i + 1}' if i == 0 else None)
-
-            # Label the camera
-            ax.text(camera_position[0], camera_position[1], camera_position[2], f'Cam {i + 1}',
-                    color='red', fontsize=10, ha='center', va='center')
-
-            # Plot camera orientation
-            for j in range(3):
-                axis_direction = R.T[:, j]
-                arrow_start = camera_position
-                ax.quiver(
-                    arrow_start[0], arrow_start[1], arrow_start[2],
-                    axis_direction[0], axis_direction[1], axis_direction[2],
-                    color=['red', 'green', 'blue'][j], length=0.1, normalize=True
-                )
 
         # Set labels and legends
         ax.set_xlabel('X')
