@@ -1,27 +1,30 @@
-import matplotlib.pyplot as plt
-
 import os
 import copy
 from typing import Tuple
 
-import numpy as np
+import matplotlib.pyplot as plt
 import PIL
 from PIL import Image, ImageDraw
+
 from FeatureExtractor import FeatureExtractor
 from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 from FeatureMatcher import NNRatioFeatureMatcher
-from SFM import CameraPose
+from SFM import *
+
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 
 class FeatureRunner:
     def __init__(self, im1_path: str, im2_path: str, scale_factor: float = 0.5,
-                 feature_extractor_class: FeatureExtractor = None, extractor_params: dict = {}, 
-                 print_img: bool = False, print_features: bool = False, print_matches: bool = False):
+                 feature_extractor_class: FeatureExtractor = None, extractor_params: dict = {},
+                 print_img: bool = False, print_features: bool = False, print_matches: bool = False, outputSuffix=""):
         self.feature_extractor = feature_extractor_class
 
         if self.feature_extractor is None:
             raise ValueError("Please provide a feature extractor class")
 
+        self.outputSuffix = outputSuffix
         self._image1 = _load_image(im1_path)
         self._image2 = _load_image(im2_path)
 
@@ -51,7 +54,7 @@ class FeatureRunner:
         print(f'{len(self.descriptors1)} descriptors in image 1, {len(self.descriptors2)} descriptors in image 2')
 
         # Match features
-        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.8)
+        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.75)
         self.matches, self.confidences = self.matcher.match_features_ratio_test(self.descriptors1, self.descriptors2)
 
         print(f'{len(self.matches)} matches found')
@@ -70,23 +73,25 @@ class FeatureRunner:
         plt.imshow(self._image1)
         plt.subplot(1, 2, 2)
         plt.imshow(self._image2)
-        plt.savefig('output/visual.png')
+        plt.savefig('output/visual{}.png'.format(self.outputSuffix))
 
     def print_features(self):
         if len(self.X1) == 0 or len(self.X2) == 0:
             print('No interest points to visualize')
             return
         num_pts_to_visualize = 300
-        rendered_img1 = _show_interest_points(self._image1, self.X1[:num_pts_to_visualize], self.Y1[:num_pts_to_visualize])
-        rendered_img2 = _show_interest_points(self._image2, self.X2[:num_pts_to_visualize], self.Y2[:num_pts_to_visualize])
+        rendered_img1 = _show_interest_points(self._image1, self.X1[:num_pts_to_visualize],
+                                              self.Y1[:num_pts_to_visualize])
+        rendered_img2 = _show_interest_points(self._image2, self.X2[:num_pts_to_visualize],
+                                              self.Y2[:num_pts_to_visualize])
 
         plt.figure(figsize=(10, 5))
         plt.subplot(1, 2, 1)
         plt.imshow(rendered_img1, cmap='gray')
         plt.subplot(1, 2, 2)
         plt.imshow(rendered_img2, cmap='gray')
-        plt.savefig('output/features.png')
-    
+        plt.savefig('output/features{}.png'.format(self.outputSuffix))
+
     def print_matches(self):
         if len(self.matches) == 0:
             print('No matches to visualize')
@@ -101,42 +106,290 @@ class FeatureRunner:
             self.Y2[self.matches[:num_pts_to_visualize, 1]]
         )
         plt.figure(figsize=(10, 5))
-        plt.imshow(c2)
-        _save_image('output/vis_lines.jpg', c2)
+        #plt.imshow(c2)
+        _save_image('output/vis_lines{}.jpg'.format(self.outputSuffix), c2)
+
+
+class Matches:
+    def __init__(self, matches, confidence, p1, p2, K1, K2):
+        self.matches = matches
+        self.confidence = confidence
+        self.p1 = p1
+        self.p2 = p2
+        self.K1 = K1
+        self.K2 = K2
+
 
 class SFMRunner:
     def __init__(self):
+        self.img_path = "test_data/tallneck_mini"
+
+        # Threshold for point tolerance when matching points from prev frame to current to find best next frame
+        next_frame_point_dist_thresh = 5.0
+
+        # How many images should be used from img_path, for ease of testing
+        max_img = 3
+
+        self.global_poses = []
+        self.global_points_3D = []
+        self.global_points_2D = []
+        self.frame_indices = []  # Stores the frame index for each 2D point
+        self.point_indices = []  # Maps 2D points to their corresponding 3D points
+        self.global_K = []
+
+        self.best_matches: Tuple | None = None
+        self.processed_pairs = set()
+
+        self.all_matches: list[list[Matches | None]] = [[None for _ in range(max_img + 1)] for _ in range(max_img + 1)]
+
+        # Concurrent stuff, this processing speed is killing me
+        self.lock = Lock()
+        self.lock2 = Lock()
+        tasks = [(i1, i2) for i1 in range(1, max_img) for i2 in range(1, max_img + 1)]
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(self.corner_detect_and_matching_process, i1, i2) for i1, i2 in tasks]
+
+            # Make sure all threads finish and throwing output out in stdout before moving on
+            for future in futures:
+                future.result()
+
+        # Initial pose
+        print("Found best pair {}".format(self.best_matches))
+
+        ransac_max_it = CameraPose.calculate_num_ransac_iterations(0.9, 8, 0.4)
+        print("Ransac max iterations {}".format(ransac_max_it))
+
+        # Perform initial ransac to figure out initial structure
+        initial_matches = self.all_matches[self.best_matches[0]][self.best_matches[1]]
+        R1 = np.eye(3)
+        t1 = np.zeros(3)
+
+        cam_pose = CameraPose(initial_matches.p1, initial_matches.p2, initial_matches.K1, initial_matches.K2)
+        R2, t2, p1, p2 = cam_pose.ransac_camera_motion(R1, t1, max_iterations=ransac_max_it)
+
+        # Triangulate using inliers from ransac
+        P1 = CameraPose.calculate_projection_matrix(R1, t1)
+        P2 = CameraPose.calculate_projection_matrix(R2, t2)
+        p3d = np.array([CameraPose.triangulate_point(pts1, pts2, P1, P2) for pts1, pts2 in zip(p1, p2)])
+
+        R1, _ = cv2.Rodrigues(R1)
+        R2, _ = cv2.Rodrigues(R2)
+
+        # Append data for Bundle Adjustment later
+        self.global_poses.append((R1, t1))
+        self.global_poses.append((R2, t2))
+
+        self.processed_pairs.clear()
+        self.processed_pairs.add(self.best_matches)
+        self.processed_pairs.add((self.best_matches[1], self.best_matches[0]))
+        self.add_points(p3d, p1, 0)
+        self.add_points(p3d, p2, 1)
+
+        self.global_K.append(initial_matches.K1)
+        self.global_K.append(initial_matches.K2)
+
+        # Find next frame
+        best_next_frame = None
+        best_prev_frame = None
+        while True:  # For now, loops forever until there's no available next frame
+            best_score = 0
+            best_pair = None
+
+            # Take second image as the reference image for the next frame, for consistency
+            i = self.best_matches[1]
+
+            # Loop through all its pairs
+            for j in range(1, max_img + 1):
+                if (i, j) in self.processed_pairs or (self.all_matches[i][j] is None):
+                    continue
+
+                points_2D_from_prev_frame = p2
+                matches = self.all_matches[i][j]
+                prev_frame_2d = matches.p1
+                next_frame_2d = matches.p2
+
+                result_prev = []
+                result_next = []
+
+                # Since 3D points are constructed from at, we need to find all the points that at has in bt, and then
+                # find out what that bt points correspond to ct. This is an effort to make sure the 2D points of
+                # next frame correspond to already established 3D points
+                for p_prime in range(prev_frame_2d.shape[0]):
+                    dist = Util.compute_euclidean_distance(points_2D_from_prev_frame, prev_frame_2d[p_prime:p_prime + 1])
+                    mask = np.argmin(dist)
+
+                    if dist[mask] < next_frame_point_dist_thresh:
+                        result_prev.append(p3d[mask])
+                        result_next.append(next_frame_2d[p_prime])
+
+                if len(result_next) >= 6 and len(result_next) > best_score:
+                    best_score = len(result_next)
+                    best_prev_frame = np.array(result_prev)
+                    best_next_frame = np.array(result_next)
+                    best_pair = (i, j)
+
+            print("Found best pair {}".format(best_pair))
+            if best_pair is None:
+                break
+
+            # Use PnP to find current frame R and t
+            matches = self.all_matches[best_pair[0]][best_pair[1]]
+            K = matches.K2
+            R3, t3 = CameraPose.solve_pnp(best_prev_frame, best_next_frame, K)
+            self.processed_pairs.add(best_pair)
+            self.processed_pairs.add((best_pair[1], best_pair[0]))
+            if R3 is None:
+                continue
+
+            # Set current frame as prev frame to prepare for next iteration
+            p1 = matches.p1
+            p2 = matches.p2
+            P1 = P2
+            P2 = CameraPose.calculate_projection_matrix(R3, t3)
+
+            # Triangulate new 3D points and add to the global list
+            p3d = np.array([CameraPose.triangulate_point(pts1, pts2, P1, P2) for pts1, pts2 in zip(p1, p2)])
+            self.add_points(p3d, p2, self.frame_indices[len(self.frame_indices) - 1] + 1)
+
+            # Keep track of poses and K intrinsics
+            R3, _ = cv2.Rodrigues(R3)
+            self.global_poses.append((R3, t3))
+            self.global_K.append(K)
+
+            # Best match of current frame becomes best match of prev frame
+            self.best_matches = best_pair
+
+        # Bundle adjustments to minimize reprojection errors
+        num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list = self.prepare_for_ba()
+        ba = BundleAdjustment(
+            camera_params=camera_params,
+            num_cameras=num_cameras,
+            num_points=num_points,
+            camera_indices=camera_indices,
+            point_indices=point_indices,
+            points_2d=points_2D,
+            points_3d=points_3D,
+            K_list=K_list)
+        optimized_camera_params, optimized_points_3D = ba.sparse_bundle_adjustment()
+        self.global_points_3D = optimized_points_3D.tolist()
+
+        # Visualization
+        self.visualize_3d_points_and_cameras()
+
+    def visualize_3d_points_and_cameras(self):
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Plot 3D points
+        points_3d = np.array(self.global_points_3D)
+        ax.scatter(points_3d[:, 0], points_3d[:, 1], points_3d[:, 2], c='blue', s=0.5, label='3D Points')
+
+        # Plot camera positions
+        for i, (R, t) in enumerate(self.global_poses):
+            # Camera position in world coordinates
+            R, _ = cv2.Rodrigues(R)
+            camera_position = -np.dot(R.T, t)
+            ax.scatter(camera_position[0], camera_position[1], camera_position[2], c='red', s=50, marker='o',
+                       label=f'Camera {i + 1}' if i == 0 else None)
+
+            # Label the camera
+            ax.text(camera_position[0], camera_position[1], camera_position[2], f'Cam {i + 1}',
+                    color='red', fontsize=10, ha='center', va='center')
+
+            # Plot camera orientation
+            for j in range(3):
+                axis_direction = R.T[:, j]
+                arrow_start = camera_position
+                ax.quiver(
+                    arrow_start[0], arrow_start[1], arrow_start[2],
+                    axis_direction[0], axis_direction[1], axis_direction[2],
+                    color=['red', 'green', 'blue'][j], length=0.1, normalize=True
+                )
+
+        # Set labels and legends
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title('3D Points and Camera Positions')
+        ax.legend()
+        plt.show()
+
+    def add_points(self, points_3d, points_2d, frame_idx):
+        for i, (p3d, p2d) in enumerate(zip(points_3d, points_2d)):
+            if self.is_new_point(p3d):
+                self.global_points_3D.append(p3d)
+                point_idx = len(self.global_points_3D) - 1
+            else:
+                point_idx = self.find_existing_point(p3d)
+
+            self.global_points_2D.append(p2d)
+            self.frame_indices.append(frame_idx)
+            self.point_indices.append(point_idx)
+
+    def is_new_point(self, p3d, threshold=1e-3):
+        if not self.global_points_3D:
+            return True
+
+        distances = Util.compute_euclidean_distance(np.array(self.global_points_3D), p3d[np.newaxis])
+        return np.min(distances) >= threshold
+
+    def find_existing_point(self, p3d, threshold=1e-3):
+        distances = Util.compute_euclidean_distance(np.array(self.global_points_3D), p3d[np.newaxis])
+        min_idx = np.argmin(distances)
+        if distances[min_idx] < threshold:
+            return min_idx
+        raise ValueError("Point not found.")
+
+    def prepare_for_ba(self):
+        num_cameras = len(set(self.frame_indices))
+        num_points = len(self.global_points_3D)
+        camera_indices = self.frame_indices
+        point_indices = self.point_indices
+        points_2D = np.array(self.global_points_2D)
+        points_3D = np.array(self.global_points_3D)
+        K_list = np.array(self.global_K)
+
+        camera_params = []
+        for pose in self.global_poses:
+            camera_params.append(np.hstack((pose[0].flatten(), pose[1].flatten())))
+        camera_params = np.array(camera_params)
+
+        return num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list
+
+    def corner_detect_and_matching_process(self, i1, i2):
+        with self.lock:
+            if i1 == i2 or (i1, i2) in self.processed_pairs or (i2, i1) in self.processed_pairs:
+                return
+
+            self.processed_pairs.add((i1, i2))
+
+        print("Processing pair {} {}".format(i1, i2))
+
+        K1 = Util.construct_K("{}/{}.jpg".format(self.img_path, i1), SensorType.CROP_FRAME)
+        K2 = Util.construct_K("{}/{}.jpg".format(self.img_path, i2), SensorType.CROP_FRAME)
+
         extractor_params = {
             'num_interest_points': 2500,
-            'ksize': 7,
+            'ksize': 3,
             'gaussian_size': 7,
             'sigma': 5,
             'alpha': 0.05,
             'feature_width': 16,
-            'pyramid_level': 4,
-            'pyramid_scale_factor': 2
+            'pyramid_level': 3,
+            'pyramid_scale_factor': 1.1
         }
 
-        for i1 in range(1, 6):
-            for i2 in range(1, 7):
-                srunner = FeatureRunner("test_data/buddha_mini/{}.png".format(i1), "test_data/buddha_mini/{}.png".format(i2),
-                                        feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params)
-                p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
-                cam_pose = CameraPose(p1, p2)
+        srunner = FeatureRunner("{}/{}.jpg".format(self.img_path, i1), "{}/{}.jpg".format(self.img_path, i2),
+                                feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params)
+        p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
 
-                if len(srunner.matches) < 40:
-                    print("{} {} Not enough matches".format(i1, i2))
-                    return
+        with self.lock2:
+            self.all_matches[i1][i2] = Matches(srunner.matches, srunner.confidences, p1, p2, K1, K2)
+            self.all_matches[i2][i1] = Matches(srunner.matches, srunner.confidences, p2, p1, K2, K1)
 
-                R, T = cam_pose.ransac_camera_motion()
-                if R is None:
-                    print("{} {} No valid config".format(i1, i2))
-                    return
-
-                R1 = np.eye(3)
-                t1 = np.zeros(3)
-
-                points_3d = [CameraPose.triangulate_point(pts1, pts2, R1, t1, R, T) for pts1, pts2 in zip(p1, p2)]
+            if self.best_matches is None or srunner.matches.shape[0] > self.all_matches[self.best_matches[0]][self.best_matches[1]].matches.shape[0]:
+                self.best_matches = (i1, i2)
 
 ###############
 ### HELPERS ###
@@ -152,11 +405,12 @@ def _convert_matches_to_coords(sift_matches, X1, Y1, X2, Y2, num_matches=2500):
 
     return pts1, pts2
 
+
 def print_sift_matches(image1, image2, keypoints1, keypoints2, matches, output_path="output/sift_matches.png"):
     plt.figure(figsize=(10, 5))
-    matched_img = _show_correspondence_lines(image1, image2, 
-                                             [kp.pt for kp in keypoints1], 
-                                             [kp.pt for kp in keypoints2], 
+    matched_img = _show_correspondence_lines(image1, image2,
+                                             [kp.pt for kp in keypoints1],
+                                             [kp.pt for kp in keypoints2],
                                              matches)
     plt.imshow(matched_img)
     plt.savefig(output_path)
@@ -176,7 +430,7 @@ def _show_interest_points(img, keypoints):
 def print_harris_corners(image, keypoints, output_path="output/harris_corners.png"):
     num_pts_to_visualize = min(300, len(keypoints))
     rendered_img = _show_interest_points(image, keypoints[:num_pts_to_visualize])
-    
+
     plt.figure(figsize=(6, 6))
     plt.imshow(rendered_img, cmap='gray')
     plt.savefig(output_path)
@@ -392,6 +646,7 @@ def _show_correspondence_lines(imgA, imgB, X1, Y1, X2, Y2, line_colors=None):
         draw.ellipse((x2 + shiftX - r, y2 - r, x2 + shiftX + r, y2 + r), fill=tuple(dot_color))
         draw.line((x1, y1, x2 + shiftX, y2), fill=tuple(line_color), width=10)
     return _PIL_image_to_numpy_arr(newImg, True)
+
 
 def _show_correspondence_circles(imgA, imgB, X1, Y1, X2, Y2):
     """
