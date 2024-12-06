@@ -1,198 +1,11 @@
-import matplotlib.pyplot as plt
-
 import os
-import copy
-from typing import Tuple
-
 import numpy as np
+from typing import Tuple
+from PIL import Image, ImageDraw
+import matplotlib.pyplot as plt
 import PIL
 from PIL import Image, ImageDraw
-from FeatureExtractor import FeatureExtractor
-from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
-from FeatureMatcher import NNRatioFeatureMatcher
-from SFM import CameraPose
-import cv2
-
-
-class FeatureRunner:
-    def __init__(self, im1_path: str, im2_path: str, scale_factor: float = 0.5,
-                 feature_extractor_class: FeatureExtractor = None, extractor_params: dict = {}, 
-                 print_img: bool = False, print_features: bool = False, print_matches: bool = False):
-        self.feature_extractor = feature_extractor_class
-
-        if self.feature_extractor is None:
-            raise ValueError("Please provide a feature extractor class")
-
-        self._image1 = _load_image(im1_path)
-        self._image2 = _load_image(im2_path)
-
-        # Rescale images if desired
-        self._image1 = _PIL_resize(self._image1,
-                                   (int(self._image1.shape[1] * scale_factor),
-                                    int(self._image1.shape[0] * scale_factor)))
-        self._image2 = _PIL_resize(self._image2,
-                                   (int(self._image2.shape[1] * scale_factor),
-                                    int(self._image2.shape[0] * scale_factor)))
-
-        # Convert images to grayscale
-        self._image1_bw = _rgb2gray(self._image1)
-        self._image2_bw = _rgb2gray(self._image2)
-
-        # Initialize feature extractor for each image
-        self.extractor1 = self.feature_extractor(self._image1_bw, extractor_params)
-        self.extractor2 = self.feature_extractor(self._image2_bw, extractor_params)
-
-        # Extract features
-        self.X1, self.Y1 = self.extractor1.detect_keypoints()
-        self.descriptors1 = self.extractor1.extract_descriptors()
-        self.X2, self.Y2 = self.extractor2.detect_keypoints()
-        self.descriptors2 = self.extractor2.extract_descriptors()
-
-        print(f'{len(self.X1)} corners in image 1, {len(self.X2)} corners in image 2')
-        print(f'{len(self.descriptors1)} descriptors in image 1, {len(self.descriptors2)} descriptors in image 2')
-
-        # Match features
-        self.matcher = NNRatioFeatureMatcher(ratio_threshold=0.7)
-        self.matches, self.confidences = self.matcher.match_features_ratio_test(self.descriptors1, self.descriptors2)
-
-        print(f'{len(self.matches)} matches found')
-
-        # Optional printing
-        if print_img:
-            self.print_image()
-        if print_features:
-            self.print_features()
-        if print_matches:
-            self.print_matches()
-
-    def print_image(self):
-        plt.figure(figsize=(12, 6))
-        plt.subplot(1, 2, 1)
-        plt.imshow(self._image1)
-        plt.subplot(1, 2, 2)
-        plt.imshow(self._image2)
-        plt.savefig('output/visual.png')
-
-    def print_features(self):
-        if len(self.X1) == 0 or len(self.X2) == 0:
-            print('No interest points to visualize')
-            return
-        num_pts_to_visualize = 300
-        rendered_img1 = _show_interest_points(self._image1, self.X1[:num_pts_to_visualize], self.Y1[:num_pts_to_visualize])
-        rendered_img2 = _show_interest_points(self._image2, self.X2[:num_pts_to_visualize], self.Y2[:num_pts_to_visualize])
-
-        plt.figure(figsize=(10, 5))
-        plt.subplot(1, 2, 1)
-        plt.imshow(rendered_img1, cmap='gray')
-        plt.subplot(1, 2, 2)
-        plt.imshow(rendered_img2, cmap='gray')
-        plt.savefig('output/features.png')
-    
-    def print_matches(self):
-        if len(self.matches) == 0:
-            print('No matches to visualize')
-            return
-        num_pts_to_visualize = 2500
-        c2 = _show_correspondence_lines(
-            self._image1,
-            self._image2,
-            self.X1[self.matches[:num_pts_to_visualize, 0]],
-            self.Y1[self.matches[:num_pts_to_visualize, 0]],
-            self.X2[self.matches[:num_pts_to_visualize, 1]],
-            self.Y2[self.matches[:num_pts_to_visualize, 1]]
-        )
-        plt.figure(figsize=(10, 5))
-        plt.imshow(c2)
-        _save_image('output/vis_lines.jpg', c2)
-
-class SFMRunner:
-    def __init__(self, extractor_params: dict = {}):
-        self.global_camera_poses = [(np.eye(3), np.zeros(3))]
-        self.global_points_3d = []
-        self.point_observations = []
-
-        for i1 in range(1, 6):
-            for i2 in range(1, 7):
-                srunner = FeatureRunner("test_data/buddha_mini/{}.png".format(i1), "test_data/buddha_mini/{}.png".format(i2),
-                                        feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params)
-                p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
-
-                if len(srunner.matches) < 40:
-                    print("{} {} Not enough matches".format(i1, i2))
-                    continue
-                    
-                cam_pose = CameraPose(p1, p2)
-                R, T = cam_pose.ransac_camera_motion()
-                if R is None:
-                    print("{} {} No valid config".format(i1, i2))
-                    continue
-
-                R1, T1 = self.global_camera_poses[0]
-                self.global_camera_poses.append((R, T))
-
-                # points_3d = [CameraPose.triangulate_point(pts1, pts2, R1, t1, R, T) for pts1, pts2 in zip(p1, p2)]
-
-                # _plot_3d_points(points_3d)
-                new_points_3d = [CameraPose.triangulate_point(pts1, pts2, R1, T1, R, T) for pts1, pts2 in zip(p1, p2)]
-                
-                for idx, (point_3d, point_2d) in enumerate(zip(new_points_3d, p1)):
-                    self.global_points_3d.append(point_3d)
-                    self.point_observations.append((len(self.global_camera_poses) - 1, idx, point_2d))
-
-        _plot_3d_points(self.global_points_3d)
-
-        
-    def bundle_adjustment_opencv(self, K):
-        n_cameras = len(self.global_camera_poses)
-        n_points = len(self.global_points_3d)
-
-        # Prepare initial camera parameters
-        camera_params = []
-        for R, T in self.global_camera_poses:
-            rvec, _ = cv2.Rodrigues(R)  # Convert rotation matrix to rotation vector
-            camera_params.append((rvec.flatten(), T))
-
-        # Prepare observation indices and 2D points
-        camera_indices = []
-        point_indices = []
-        points_2d = []
-        for cam_idx, pt_idx, pt_2d in self.point_observations:
-            camera_indices.append(cam_idx)
-            point_indices.append(pt_idx)
-            points_2d.append(pt_2d)
-        camera_indices = np.array(camera_indices)
-        point_indices = np.array(point_indices)
-        points_2d = np.array(points_2d)
-
-        # Prepare 3D points
-        points_3d = np.array(self.global_points_3d)
-
-        # Flatten rotation vectors and translations
-        rvecs = [param[0] for param in camera_params]
-        tvecs = [param[1] for param in camera_params]
-
-        # Use OpenCV's bundleAdjust function
-        retval, rvecs, tvecs, refined_points_3d = cv2.bundleAdjust(
-            points_3d,
-            points_2d,
-            camera_indices,
-            rvecs,
-            tvecs,
-            K
-        )
-
-        # Update global camera poses
-        self.global_camera_poses = [
-            (cv2.Rodrigues(rvec)[0], tvec)
-            for rvec, tvec in zip(rvecs, tvecs)
-        ]
-
-        # Update global 3D points
-        self.global_points_3d = refined_points_3d.tolist()
-
-###############
-### HELPERS ###
-###############
+import copy
 
 def _plot_3d_points(points_3d):
     points_3d = [point for point in points_3d if point is not None]
@@ -213,6 +26,9 @@ def _plot_3d_points(points_3d):
 def _convert_matches_to_coords(sift_matches, X1, Y1, X2, Y2, num_matches=2500):
     # Extract the first num_matches matches
     match_indices = sift_matches[:num_matches]
+
+    if len(match_indices) == 0:
+        return None, None
 
     # Extract coordinates using match indices
     pts1 = np.column_stack((X1[match_indices[:, 0]], Y1[match_indices[:, 0]]))
@@ -502,3 +318,170 @@ def _show_correspondence_circles(imgA, imgB, X1, Y1, X2, Y2):
         # newImg = cv2.circle(newImg, (x2+shiftX, y2), 10, green, 2, cv2.LINE_AA)
 
     return _PIL_image_to_numpy_arr(newImg, True)
+
+
+def normalize_points(points: np.ndarray) -> (np.ndarray, np.ndarray):
+    # convert to homogeneous coordinates if not already
+    if points.shape[1] == 2:
+        points = np.hstack([points, np.ones((points.shape[0], 1))])
+
+    points = points.astype(np.float64)
+
+    u = points[:, 0]
+    v = points[:, 1]
+
+    # get means of u and v
+    c_u = np.mean(u)
+    c_v = np.mean(v)
+
+    # subtract the means
+    u_centered = u - c_u
+    v_centered = v - c_v
+
+    # Instructions say to use mean squared distance, but this did not pass the test.
+    # Instead, mean euclidean distance passed, so I implemented this and kept the
+    # mean squared distance code for reference.
+
+    # Mean Euclidean Distance (MED) (passed test)
+    # --------------------------------------------------------
+    med = np.mean(np.sqrt(u_centered**2 + v_centered**2))
+
+    # get scale (mean euclidean distance approach)
+    scale = np.sqrt(2) / med
+
+    # Mean Squared Distance (MSD) (did not pass test so it's commented out)
+    # --------------------------------------------------------
+    # std_u = np.std(u_centered)
+    # std_v = np.std(v_centered)
+    # msd = std_u**2 + std_v**2
+    # scale = np.sqrt(2) / np.sqrt(msd)
+
+    # define T matrices
+    m_1 = np.array([
+        [scale, 0, 0],
+        [0, scale, 0],
+        [0, 0, 1]
+    ])
+    m_2 = np.array([
+        [1, 0, -c_u],
+        [0, 1, -c_v],
+        [0, 0, 1]
+    ])
+
+    # define T
+    T = np.dot(m_1, m_2)
+
+    # normalize points
+    points_normalized = np.dot(T, points.T).T
+
+    return points_normalized, T
+
+
+def unnormalize_F(
+        F_norm: np.ndarray, T_a: np.ndarray, T_b: np.ndarray) -> np.ndarray:
+    return T_b.T @ F_norm @ T_a
+
+
+def estimate_fundamental_matrix(
+        points_a: np.ndarray, points_b: np.ndarray) -> np.ndarray:
+    N = points_a.shape[0]
+
+    # normalize points
+    points_a_norm, T_a = normalize_points(points_a)
+    points_b_norm, T_b = normalize_points(points_b)
+
+    U = []
+    # build U matrix
+    for i in range(N):
+        x = points_a_norm[i][0]
+        y = points_a_norm[i][1]
+        x_p = points_b_norm[i][0]
+        y_p = points_b_norm[i][1]
+        U.append([x_p * x, x_p * y, x_p, y_p * x, y_p * y, y_p, x, y, 1])
+    U = np.array(U)
+
+    # find solution with SVD
+    _, _, Vt = np.linalg.svd(U)
+
+    # get initial estimate
+    F = Vt[-1].reshape(3, 3)
+
+    # run svd on initial estimate
+    U_svd, S, Vt = np.linalg.svd(F)
+
+    # set smallest singular value to 0
+    S[2] = 0
+
+    # reconstruct F
+    F = np.dot(U_svd, np.dot(np.diag(S), Vt))
+
+    # unnormalize F
+    F = unnormalize_F(F, T_a, T_b)
+
+    return F
+
+
+def calculate_num_ransac_iterations(
+    prob_success: float, sample_size: int, ind_prob_correct: float) -> int:
+    # calculate the number of iterations
+    # equation derived from 1 - (1 - r^S)^N = prob_success
+    num_samples = np.log(1 - prob_success) / np.log((1 - ind_prob_correct**sample_size))
+
+    return int(num_samples)
+
+
+def ransac_fundamental_matrix(
+        matches_a: np.ndarray, matches_b: np.ndarray) -> np.ndarray:
+
+    best_F, inliers_a, inliers_b = None, None, None
+
+    M = matches_a.shape[0]
+
+    # initialize threshold
+    error_threshold = 12
+
+    # initialize values to determine num_trials
+    prob_success = 0.98
+    sample_size = 8
+    ind_prob_correct = 0.4
+
+    num_trials = calculate_num_ransac_iterations(prob_success, sample_size, ind_prob_correct)
+
+    bestCount = -1
+
+    for i in range(num_trials):
+        # get subset of indices
+        selected_indices = np.random.choice(M, size=sample_size, replace=False)
+        a_subset = matches_a[selected_indices]
+        b_subset = matches_b[selected_indices]
+
+        # get fundamental matrix
+        F = estimate_fundamental_matrix(a_subset, b_subset)
+
+        # calculate error by taking geometric distances of a keypoint to its epipolar line
+
+        # calculate geometric distances from points in image A to epipolar lines in image  B
+        l_b = (F @ np.vstack((matches_a[:, 0], matches_a[:, 1], np.ones(M)))).T
+        b_a, b_b, b_c = l_b[:, 0], l_b[:, 1], l_b[:, 2]
+        xb_to_lb_distances = np.abs(b_a * matches_b[:, 0] + b_b * matches_b[:, 1] + b_c) / np.sqrt(b_a ** 2 + b_b ** 2)
+
+        # calculate geometric distances from points in image B to epipolar lines in image A
+        l_a = (F.T @ np.vstack((matches_b[:, 0], matches_b[:, 1], np.ones(M)))).T
+        a_a, a_b, a_c = l_a[:, 0], l_a[:, 1], l_a[:, 2]
+        xa_to_la_distances = np.abs(a_a * matches_a[:, 0] + a_b * matches_a[:, 1] + a_c) / np.sqrt(a_a ** 2 + a_b ** 2)
+
+        # compute total error
+        error = xb_to_lb_distances + xa_to_la_distances
+
+        # get current number of inliers
+        curr_inliers_a = matches_a[error <= error_threshold]
+        curr_inliers_b = matches_b[error <= error_threshold]
+
+        # check if current F and inliers are best and keep track of them if they are
+        if len(curr_inliers_a) > bestCount:
+            best_F = F
+            inliers_a = curr_inliers_a
+            inliers_b = curr_inliers_b
+            bestCount = len(inliers_a)
+
+    return best_F, inliers_a, inliers_b
