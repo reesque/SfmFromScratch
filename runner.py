@@ -6,15 +6,17 @@ import matplotlib.pyplot as plt
 import PIL
 from PIL import Image, ImageDraw
 from matplotlib import cm
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from FeatureExtractor import FeatureExtractor
 from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 from FeatureMatcher import NNRatioFeatureMatcher
+from PoseEstimator import PoseEstimator
 from SFM import *
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+
+from Visualizer import Visualizer
 
 
 class FeatureRunner:
@@ -124,14 +126,9 @@ class Matches:
 
 
 class SFMRunner:
-    def __init__(self, img_path):
+    def __init__(self, img_path, max_img, pose_estimator: PoseEstimator = None, dist_threshold=5.0, export_suffix=None):
         self.img_path = img_path
-
-        # Threshold for point tolerance when matching points from prev frame to current to find best next frame
-        next_frame_point_dist_thresh = 5.0
-
-        # How many images should be used from img_path, for ease of testing
-        max_img = 7
+        self.pose_estimator = pose_estimator
 
         self.global_poses = []
         self.global_points_3D = []
@@ -143,15 +140,33 @@ class SFMRunner:
         self.best_matches: Tuple | None = None
         self.processed_pairs = set()
 
+        self.max_img = max_img
+        self.dist_threshold = dist_threshold
+        self.export_name = export_suffix
+
+        self.perform()
+
+    @staticmethod
+    def load(import_name):
+        npz = np.load('output/{}.npz'.format(import_name))
+
+        global_points_3D = npz["p3d"].tolist()
+        frame_indices = npz["frame_idx"].tolist()
+        point_indices = npz["pt_idx"].tolist()
+
+        Visualizer(global_points_3D, frame_indices, point_indices)
+
+    def perform(self):
         self.ransac_max_it = CameraPose.calculate_num_ransac_iterations(0.98, 8, 0.4)
         print("Ransac max iterations {}".format(self.ransac_max_it))
 
-        self.all_matches: list[list[Matches | None]] = [[None for _ in range(max_img + 1)] for _ in range(max_img + 1)]
+        self.all_matches: list[list[Matches | None]] = [[None for _ in range(self.max_img + 1)] for _ in
+                                                        range(self.max_img + 1)]
 
         # Concurrent stuff, this processing speed is killing me
         self.lock = Lock()
         self.lock2 = Lock()
-        tasks = [(i1, i1 + 1) for i1 in range(1, max_img)]
+        tasks = [(i1, i1 + 1) for i1 in range(1, self.max_img)]
 
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = [executor.submit(self.corner_detect_and_matching_process, i1, i2) for i1, i2 in tasks]
@@ -193,8 +208,6 @@ class SFMRunner:
         self.global_K.append(initial_matches.K1)
         self.global_K.append(initial_matches.K2)
 
-        self.visualize_3d_points_and_cameras()
-
         # Find next frame
         while True:  # For now, loops forever until there's no available next frame
             best_pair = None
@@ -205,7 +218,7 @@ class SFMRunner:
             i = self.best_matches[1]
             j = i + 1
 
-            if i == max_img:
+            if i == self.max_img:
                 break
 
             if (i, j) in self.processed_pairs or (self.all_matches[i][j] is None):
@@ -226,7 +239,7 @@ class SFMRunner:
                 dist = Util.compute_euclidean_distance(points_2D_from_prev_frame, prev_frame_2d[p_prime:p_prime + 1])
                 mask = np.argmin(dist)
 
-                if dist[mask] < next_frame_point_dist_thresh:
+                if dist[mask] < self.dist_threshold:
                     result_prev.append(p3d[mask])
                     result_next.append(next_frame_2d[p_prime])
 
@@ -234,20 +247,25 @@ class SFMRunner:
             best_next_frame = np.array(result_next)
             best_pair = (i, j)
 
-            print("PnP pair {}".format(best_pair))
+            print("Pose estimate pair {}".format(best_pair))
             self.processed_pairs.add(best_pair)
             self.processed_pairs.add((best_pair[1], best_pair[0]))
 
-            # Use PnP to find current frame R and t
+            # Use pose estimation to find current frame R and t
             matches = self.all_matches[best_pair[0]][best_pair[1]]
 
             K = matches.K2
-            R3, t3, p_inliner = CameraPose.solve_pnp(best_prev_frame, best_next_frame, K, ransac_max_it=self.ransac_max_it)
+            pe = self.pose_estimator(np.asarray(best_prev_frame, dtype=np.float32),
+                                     np.asarray(best_next_frame, dtype=np.float32),
+                                     K=K, ransac_max_it=self.ransac_max_it)
+
+            R3, t3, p_inliers = pe.R, pe.t, pe.inliers
             if R3 is None:
                 raise Exception("Cannot determine pose for pair {}".format(best_pair))
 
             current_frame = self.frame_indices[len(self.frame_indices) - 1] + 1
-            self.add_points(best_prev_frame, best_next_frame, current_frame)
+            if not p_inliers is None:
+                self.add_points(best_prev_frame, best_next_frame, current_frame)
 
             # Set current frame as prev frame to prepare for next iteration
             p1 = matches.p1
@@ -267,70 +285,26 @@ class SFMRunner:
             # Best match of current frame becomes best match of prev frame
             self.best_matches = best_pair
 
-            # Visualization
-            #self.visualize_3d_points_and_cameras()
+        # Bundle adjustments to minimize reprojection errors
+        num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list = self.prepare_for_ba()
+        ba = BundleAdjustment(
+            camera_params=camera_params,
+            num_cameras=num_cameras,
+            num_points=num_points,
+            camera_indices=camera_indices,
+            point_indices=point_indices,
+            points_2d=points_2D,
+            points_3d=points_3D,
+            K_list=K_list)
+        optimized_camera_params, optimized_points_3D = ba.sparse_bundle_adjustment()
+        self.global_points_3D = optimized_points_3D.tolist()
 
-            # Bundle adjustments to minimize reprojection errors
-            if self.best_matches[1] % 2 == 0:
-                num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list = self.prepare_for_ba()
-                ba = BundleAdjustment(
-                    camera_params=camera_params,
-                    num_cameras=num_cameras,
-                    num_points=num_points,
-                    camera_indices=camera_indices,
-                    point_indices=point_indices,
-                    points_2d=points_2D,
-                    points_3d=points_3D,
-                    K_list=K_list)
-                optimized_camera_params, optimized_points_3D = ba.sparse_bundle_adjustment()
-                self.global_points_3D = optimized_points_3D.tolist()
-
-            # Visualization
-            self.visualize_3d_points_and_cameras()
+        if not self.export_name is None:
+            self.save_data()
 
     def save_data(self):
-        np.savez('output/points_3d.npz', points=np.array(self.global_points_3D))
-        np.savez('output/poses.npz', points=np.array(self.global_poses))
-        np.savez('output/points_2d.npz', points=np.array(self.global_points_2D))
-        np.savez('output/frame_indices.npz', points=np.array(self.frame_indices))
-        np.savez('output/point_indices.npz', points=np.array(self.point_indices))
-
-    def visualize_3d_points_and_cameras(self, with_perspective=False):
-        fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
-
-        # Plot 3D points
-        points_3d = np.array(self.global_points_3D)
-
-        if not with_perspective:
-            ax.scatter(points_3d[:, 0], points_3d[:, 1], points_3d[:, 2], c='blue', s=0.5, label='3D Points')
-        else:
-            frame_indices = np.array(self.frame_indices)
-            point_indices = np.array(self.point_indices)
-
-            # Get unique frames
-            unique_frames = np.unique(frame_indices)
-
-            # Generate a colormap
-            colors = cm.rainbow(np.linspace(0, 1, len(unique_frames)))
-
-            # Plot points for each frame with a unique color
-            for frame_idx in unique_frames:
-                # Find 3D points observed in the current frame
-                mask = np.array(frame_indices) == frame_idx
-                points_to_plot = points_3d[np.unique(np.array(point_indices)[mask])]
-
-                # Plot these points
-                ax.scatter(points_to_plot[:, 0], points_to_plot[:, 1], points_to_plot[:, 2],
-                           c=colors[frame_idx], label=f"Frame {frame_idx}")
-
-        # Set labels and legends
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.set_title('3D Points and Camera Positions')
-        ax.legend()
-        plt.show()
+        np.savez('output/{}.npz'.format(self.export_name), p3d=np.array(self.global_points_3D),
+                 frame_idx=np.array(self.frame_indices), pt_idx=np.array(self.point_indices))
 
     def add_points(self, points_3d, points_2d, frame_idx):
         for i, (p3d, p2d) in enumerate(zip(points_3d, points_2d)):
@@ -398,7 +372,8 @@ class SFMRunner:
         }
 
         srunner = FeatureRunner("{}/{}.jpg".format(self.img_path, i1), "{}/{}.jpg".format(self.img_path, i2),
-                                feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params, match_threshold=0.85)
+                                feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params,
+                                match_threshold=0.85)
         p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
 
         if (i1, i2) != (1, 2):
@@ -408,8 +383,10 @@ class SFMRunner:
             self.all_matches[i1][i2] = Matches(srunner.matches, srunner.confidences, p1, p2, K1, K2)
             self.all_matches[i2][i1] = Matches(srunner.matches, srunner.confidences, p2, p1, K2, K1)
 
-            if self.best_matches is None or srunner.matches.shape[0] > self.all_matches[self.best_matches[0]][self.best_matches[1]].matches.shape[0]:
+            if self.best_matches is None or srunner.matches.shape[0] > \
+                    self.all_matches[self.best_matches[0]][self.best_matches[1]].matches.shape[0]:
                 self.best_matches = (i1, i2)
+
 
 ###############
 ### HELPERS ###

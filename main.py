@@ -1,11 +1,13 @@
 import matplotlib
 
-from runner import FeatureRunner, SFMRunner
+from PoseEstimator import PnPRansac
+from runner import SFMRunner
 from sys import platform
 
 
 def main():
-    SFMRunner("test_data/tallneck2_mini")
+    #SFMRunner("test_data/tallneck2_mini", 3, PnPRansac, export_suffix="exp")
+    #SFMRunner.load("best")
     
 
 if __name__ == "__main__":

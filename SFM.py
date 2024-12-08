@@ -5,7 +5,6 @@ from PIL import Image
 from PIL.ExifTags import TAGS
 from enum import Enum
 from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
 
 
 class SensorType(Enum):
@@ -312,36 +311,6 @@ class CameraPose:
     @staticmethod
     def calculate_projection_matrix(R, t, K):
         return K @ np.hstack([R, t.reshape(-1, 1)])
-
-    @staticmethod
-    def solve_pnp(pts_3d, pts_2d, K, ransac_max_it=100, dist_coeffs=None):
-        # Ensure points are float32
-        pts_3d = np.asarray(pts_3d, dtype=np.float32)
-        pts_2d = np.asarray(pts_2d, dtype=np.float32)
-
-        if pts_3d.shape[0] < 4 or pts_2d.shape[0] < 4:
-            return None, None
-
-        np.random.seed(5)
-
-        # SolvePnP with RANSAC to handle outliers
-        success, rvec, tvec, p = cv2.solvePnPRansac(
-            objectPoints=pts_3d,  # 3D points in world space
-            imagePoints=pts_2d,  # 2D points in image space
-            cameraMatrix=K,  # Intrinsic camera matrix
-            distCoeffs=dist_coeffs,  # Distortion coefficients (None if undistorted)
-            reprojectionError=8.0,
-            iterationsCount=ransac_max_it,
-            flags=cv2.SOLVEPNP_ITERATIVE  # Standard iterative approach
-        )
-
-        if not success:
-            return None, None, None
-
-        # Back to rotation matrix
-        R, _ = cv2.Rodrigues(rvec)
-
-        return R, tvec, p
 
 
 class BundleAdjustment:
