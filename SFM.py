@@ -8,6 +8,9 @@ from scipy.optimize import least_squares
 
 
 class SensorType(Enum):
+    """
+    Type of camera sensor
+    """
     MEDIUM_FORMAT = 1
     FULL_FRAME = 2
     CROP_FRAME = 3
@@ -16,107 +19,21 @@ class SensorType(Enum):
     SMARTPHONE = 6
 
 
-class Util:
-    @staticmethod
-    def construct_K(imagePath, sensorType: SensorType):
-        image = Image.open(imagePath)
-        width, height = image.size
-        exif_data = image._getexif()
-
-        # Decode EXIF data and extract focal length
-        focal_length = None
-        if exif_data:
-            for tag_id, value in exif_data.items():
-                tag = TAGS.get(tag_id, tag_id)
-                if tag == "FocalLength":
-                    # If focal length is usually a tuple (numerator, denominator)
-                    if isinstance(value, tuple):
-                        focal_length = value[0] / value[1]  # Convert to a single value
-                    else:
-                        focal_length = value
-                    break
-        else:
-            print("No EXIF data. Cannot work with this image")
-            raise Exception("No EXIF data. Cannot work with this image")
-
-        if focal_length is None:
-            print("No focal length data. Cannot work with this image")
-            raise Exception("No focal length data. Cannot work with this image")
-
-        sensor_height = 0.0
-        sensor_width = 0.0
-
-        if sensorType is SensorType.MEDIUM_FORMAT:
-            sensor_width = 53.0
-            sensor_height = 40.20
-        elif sensorType is SensorType.FULL_FRAME:
-            sensor_width = 35.0
-            sensor_height = 24.0
-        elif sensorType is SensorType.CROP_FRAME:
-            sensor_width = 23.6
-            sensor_height = 15.60
-        elif sensorType is SensorType.MICRO_FOUR_THIRD:
-            sensor_width = 17.0
-            sensor_height = 13.0
-        elif sensorType is SensorType.ONE_INCH:
-            sensor_width = 12.80
-            sensor_height = 9.60
-        elif sensorType is SensorType.SMARTPHONE:
-            sensor_width = 6.17
-            sensor_height = 4.55
-
-        fx = focal_length * width / sensor_width
-        fy = focal_length * height / sensor_height
-        cx = width / 2
-        cy = height / 2
-        K = np.array([[fx, 0, cx],
-                      [0, fy, cy],
-                      [0, 0, 1]])
-
-        return K
-
-    @staticmethod
-    def compute_euclidean_distance(arr1, arr2):
-        if arr2.shape[0] == 1:
-            # arr2 is a single point
-            return np.linalg.norm(arr1 - arr2, axis=1)
-        # Full distance matrix
-        return np.linalg.norm(arr1[:, np.newaxis] - arr2, axis=2)
-
-
 class CameraPose:
     def __init__(self, pts1, pts2, K1, K2):
+        """
+        Initial camera pose estimation. Also contains helper functions related to
+        camera pose, such as triangulation, construct K, find inliers, etc.
+
+        :param pts1: Correspondence of image 1
+        :param pts2: Correspondence of image 2
+        :param K1: Camera intrinsic of image 1
+        :param K2: Camera intrinsic of image 2
+        """
         self.pts1 = pts1
         self.pts2 = pts2
         self.K1 = K1
         self.K2 = K2
-
-    @staticmethod
-    def normalize_points(points):
-        mean = np.mean(points[:, :2], axis=0)
-        cu, cv = mean[0], mean[1]
-
-        # Euclidean dist
-        sqr_dist = np.sqrt((points[:, 0] - cu) ** 2 + (points[:, 1] - cv) ** 2)
-        mean_sqr_dist = np.mean(sqr_dist)
-        scale = np.sqrt(2) / mean_sqr_dist
-
-        T = np.array([[scale, 0, -scale * cu],
-                      [0, scale, -scale * cv],
-                      [0, 0, 1]])
-
-        points_normalized = points @ T.T
-
-        return points_normalized, T
-
-    @staticmethod
-    def unnormalize_F(F_norm, T_a, T_b):
-        return T_b.T @ F_norm @ T_a
-
-    @staticmethod
-    def calculate_num_ransac_iterations(prob_success: float, sample_size: int, ind_prob_correct: float) -> int:
-        num_samples = np.log(1 - prob_success) / np.log(1 - (ind_prob_correct ** sample_size))
-        return int(num_samples)
 
     def ransac_camera_motion(self, R_base, T_base, threshold=1.0, max_iterations=1000):
         best_inliers1, best_inliers2 = [], []
@@ -185,6 +102,27 @@ class CameraPose:
 
         return best_r, best_t, np.array(best_inliers1), np.array(best_inliers2)
 
+    def _check_valid_pose(self, R_base, T_base, R_candidate, T_candidate):
+        for i in range(len(self.pts1)):
+            x1 = np.array([self.pts1[i, 0], self.pts1[i, 1], 1])  # Homogeneous coordinates for pts1
+            x2 = np.array([self.pts2[i, 0], self.pts2[i, 1], 1])  # Homogeneous coordinates for pts2
+
+            P1 = CameraPose.calculate_projection_matrix(R_base, T_base, self.K1)
+            P2 = CameraPose.calculate_projection_matrix(R_candidate, T_candidate, self.K2)
+
+            # Triangulate the 3D point from both images
+            X = CameraPose.triangulate_point(x1, x2, P1, P2)
+
+            # Convert X to camera coordinates of both views
+            X_base = R_base @ X[:3] + T_base
+            X_candidate = R_candidate @ X[:3] + T_candidate
+
+            # Check if the depth (Z) of the triangulated point is positive in both views
+            if X_base[2] < 1e-6 or X_candidate[2] < 1e-6:
+                return False
+
+        return True
+
     @staticmethod
     def find_inliers(p1, p2, threshold=1.0, max_iterations=1000):
         best_inliers1, best_inliers2 = [], []
@@ -220,6 +158,33 @@ class CameraPose:
                 best_inliers2 = p2[inlier_mask]
 
         return np.array(best_inliers1), np.array(best_inliers2)
+
+    @staticmethod
+    def normalize_points(points):
+        mean = np.mean(points[:, :2], axis=0)
+        cu, cv = mean[0], mean[1]
+
+        # Euclidean dist
+        sqr_dist = np.sqrt((points[:, 0] - cu) ** 2 + (points[:, 1] - cv) ** 2)
+        mean_sqr_dist = np.mean(sqr_dist)
+        scale = np.sqrt(2) / mean_sqr_dist
+
+        T = np.array([[scale, 0, -scale * cu],
+                      [0, scale, -scale * cv],
+                      [0, 0, 1]])
+
+        points_normalized = points @ T.T
+
+        return points_normalized, T
+
+    @staticmethod
+    def unnormalize_F(F_norm, T_a, T_b):
+        return T_b.T @ F_norm @ T_a
+
+    @staticmethod
+    def calculate_num_ransac_iterations(prob_success: float, sample_size: int, ind_prob_correct: float) -> int:
+        num_samples = np.log(1 - prob_success) / np.log(1 - (ind_prob_correct ** sample_size))
+        return int(num_samples)
 
     @staticmethod
     def _compute_fundamental_matrix(p1, p2) -> np.ndarray:
@@ -270,27 +235,6 @@ class CameraPose:
 
         return F_rank2
 
-    def _check_valid_pose(self, R_base, T_base, R_candidate, T_candidate):
-        for i in range(len(self.pts1)):
-            x1 = np.array([self.pts1[i, 0], self.pts1[i, 1], 1])  # Homogeneous coordinates for pts1
-            x2 = np.array([self.pts2[i, 0], self.pts2[i, 1], 1])  # Homogeneous coordinates for pts2
-
-            P1 = CameraPose.calculate_projection_matrix(R_base, T_base, self.K1)
-            P2 = CameraPose.calculate_projection_matrix(R_candidate, T_candidate, self.K2)
-
-            # Triangulate the 3D point from both images
-            X = CameraPose.triangulate_point(x1, x2, P1, P2)
-
-            # Convert X to camera coordinates of both views
-            X_base = R_base @ X[:3] + T_base
-            X_candidate = R_candidate @ X[:3] + T_candidate
-
-            # Check if the depth (Z) of the triangulated point is positive in both views
-            if X_base[2] < 1e-6 or X_candidate[2] < 1e-6:
-                return False
-
-        return True
-
     @staticmethod
     def triangulate_point(x1, x2, P1, P2):
         # Create the system of equations for triangulation
@@ -311,6 +255,79 @@ class CameraPose:
     @staticmethod
     def calculate_projection_matrix(R, t, K):
         return K @ np.hstack([R, t.reshape(-1, 1)])
+
+    @staticmethod
+    def construct_K(image_path, sensor_type: SensorType):
+        """
+        Calculating camera intrinsic using EXIF data, providing with the sensor type of the camera
+        
+        :param image_path: Path of the image
+        :param sensor_type: Type of sensor of the camera
+        :return: K
+        """
+        image = Image.open(image_path)
+        width, height = image.size
+        exif_data = image._getexif()
+
+        # Decode EXIF data and extract focal length
+        focal_length = None
+        if exif_data:
+            for tag_id, value in exif_data.items():
+                tag = TAGS.get(tag_id, tag_id)
+                if tag == "FocalLength":
+                    # If focal length is usually a tuple (numerator, denominator)
+                    if isinstance(value, tuple):
+                        focal_length = value[0] / value[1]  # Convert to a single value
+                    else:
+                        focal_length = value
+                    break
+        else:
+            print("No EXIF data. Cannot work with this image")
+            raise Exception("No EXIF data. Cannot work with this image")
+
+        if focal_length is None:
+            print("No focal length data. Cannot work with this image")
+            raise Exception("No focal length data. Cannot work with this image")
+
+        sensor_height = 0.0
+        sensor_width = 0.0
+
+        if sensor_type is SensorType.MEDIUM_FORMAT:
+            sensor_width = 53.0
+            sensor_height = 40.20
+        elif sensor_type is SensorType.FULL_FRAME:
+            sensor_width = 35.0
+            sensor_height = 24.0
+        elif sensor_type is SensorType.CROP_FRAME:
+            sensor_width = 23.6
+            sensor_height = 15.60
+        elif sensor_type is SensorType.MICRO_FOUR_THIRD:
+            sensor_width = 17.0
+            sensor_height = 13.0
+        elif sensor_type is SensorType.ONE_INCH:
+            sensor_width = 12.80
+            sensor_height = 9.60
+        elif sensor_type is SensorType.SMARTPHONE:
+            sensor_width = 6.17
+            sensor_height = 4.55
+
+        fx = focal_length * width / sensor_width
+        fy = focal_length * height / sensor_height
+        cx = width / 2
+        cy = height / 2
+        K = np.array([[fx, 0, cx],
+                      [0, fy, cy],
+                      [0, 0, 1]])
+
+        return K
+
+    @staticmethod
+    def compute_euclidean_distance(arr1, arr2):
+        if arr2.shape[0] == 1:
+            # arr2 is a single point
+            return np.linalg.norm(arr1 - arr2, axis=1)
+        # Full distance matrix
+        return np.linalg.norm(arr1[:, np.newaxis] - arr2, axis=2)
 
 
 class BundleAdjustment:

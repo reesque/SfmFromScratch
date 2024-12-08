@@ -4,7 +4,10 @@ from matplotlib import cm
 from matplotlib.widgets import Button
 
 
-class Visualizer:
+class V3D:
+    """
+    Visualizing 3D points, given the corresponding 2D points indices and their frames for coloring purpose
+    """
     def __init__(self, points_3d, frame_indices, point_indices):
         self.points_3d = np.array(points_3d)
         self.frame_indices = np.array(frame_indices)
@@ -35,7 +38,7 @@ class Visualizer:
 
             # Plot these points
             self.scatter_plot.append(ax.scatter(points_to_plot[:, 0], points_to_plot[:, 1], points_to_plot[:, 2],
-                                           c=colors[frame_idx], label=f"Frame {frame_idx}"))
+                                           c=colors[frame_idx], label=f"Frame {frame_idx}", s=0.8))
 
         # Set labels and legends
         ax.set_xlabel('X')

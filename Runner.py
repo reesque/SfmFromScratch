@@ -5,7 +5,6 @@ from typing import Tuple
 import matplotlib.pyplot as plt
 import PIL
 from PIL import Image, ImageDraw
-from matplotlib import cm
 
 from FeatureExtractor import FeatureExtractor
 from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
@@ -16,20 +15,20 @@ from SFM import *
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
-from Visualizer import Visualizer
+from Visualizer import V3D
 
 
 class FeatureRunner:
     def __init__(self, im1_path: str, im2_path: str, scale_factor: float = 0.5,
                  feature_extractor_class: FeatureExtractor = None, extractor_params: dict = {},
                  print_img: bool = False, print_features: bool = False,
-                 print_matches: bool = False, outputSuffix="", match_threshold=0.8):
+                 print_matches: bool = False, output_suffix="", match_threshold=0.8):
         self.feature_extractor = feature_extractor_class
 
         if self.feature_extractor is None:
             raise ValueError("Please provide a feature extractor class")
 
-        self.outputSuffix = outputSuffix
+        self.outputSuffix = output_suffix
         self._image1 = _load_image(im1_path)
         self._image2 = _load_image(im2_path)
 
@@ -111,7 +110,7 @@ class FeatureRunner:
             self.Y2[self.matches[:num_pts_to_visualize, 1]]
         )
         plt.figure(figsize=(10, 5))
-        #plt.imshow(c2)
+        plt.imshow(c2)
         _save_image('output/vis_lines{}.jpg'.format(self.outputSuffix), c2)
 
 
@@ -126,10 +125,35 @@ class Matches:
 
 
 class SFMRunner:
-    def __init__(self, img_path, max_img, pose_estimator: PoseEstimator = None, dist_threshold=5.0, export_suffix=None):
-        self.img_path = img_path
-        self.pose_estimator = pose_estimator
+    def __init__(self, img_path, max_img, extractor_params, match_threshold=0.85, pose_estimator: PoseEstimator = None,
+                 dist_threshold=5.0, single_K=None, camera_sensor: SensorType = None, model_name=None):
+        """
+        Structure from motion pipeline. Process images sequentially, ordered ascending by name. Name should be
+        single integer, from 1 to max_img
 
+        :param img_path: Path for images
+        :param max_img: number of images to take in
+        :param extractor_params: parameters for corner detection
+        :param match_threshold: threshold for matching features
+        :param pose_estimator: class used for pose estimation
+        :param dist_threshold: distance between matches of current and previous frame. Used to determine which
+                               3D points from last frame correspond to 2D of current frame
+        :param single_K: if provided, the pipeline will use this for all images. Otherwise, calculate using EXIF data
+        :param model_name: if provided, the output data will be saved input /output directory with name of the model
+        :param camera_sensor: if single K value is not provided, this should be provided to calculate K from each images
+        """
+        # Input args
+        self.img_path = img_path
+        self.PoseEstimator = pose_estimator
+        self.single_K = single_K
+        self.max_img = max_img
+        self.dist_threshold = dist_threshold
+        self.model_name = model_name
+        self.extractor_params = extractor_params
+        self.match_threshold = match_threshold
+        self.camera_sensor = camera_sensor
+
+        # Global values, for bundle adjustment and visualization
         self.global_poses = []
         self.global_points_3D = []
         self.global_points_2D = []
@@ -137,37 +161,25 @@ class SFMRunner:
         self.point_indices = []  # Maps 2D points to their corresponding 3D points
         self.global_K = []
 
-        self.best_matches: Tuple | None = None
+        # Temporary variable for processing
+        self.current_pair: Tuple | None = None
         self.processed_pairs = set()
-
-        self.max_img = max_img
-        self.dist_threshold = dist_threshold
-        self.export_name = export_suffix
-
-        self.perform()
-
-    @staticmethod
-    def load(import_name):
-        npz = np.load('output/{}.npz'.format(import_name))
-
-        global_points_3D = npz["p3d"].tolist()
-        frame_indices = npz["frame_idx"].tolist()
-        point_indices = npz["pt_idx"].tolist()
-
-        Visualizer(global_points_3D, frame_indices, point_indices)
-
-    def perform(self):
         self.ransac_max_it = CameraPose.calculate_num_ransac_iterations(0.98, 8, 0.4)
-        print("Ransac max iterations {}".format(self.ransac_max_it))
-
         self.all_matches: list[list[Matches | None]] = [[None for _ in range(self.max_img + 1)] for _ in
                                                         range(self.max_img + 1)]
 
-        # Concurrent stuff, this processing speed is killing me
+        # Lock for threading
         self.lock = Lock()
-        self.lock2 = Lock()
+
+        self.perform()
+
+    def perform(self):
+        print("Ransac max iterations {}".format(self.ransac_max_it))
+
+        # Concurrent stuff, this processing speed is killing me
         tasks = [(i1, i1 + 1) for i1 in range(1, self.max_img)]
 
+        # Corner detection and matching
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = [executor.submit(self.corner_detect_and_matching_process, i1, i2) for i1, i2 in tasks]
 
@@ -176,11 +188,11 @@ class SFMRunner:
                 future.result()
 
         # Initial pose
-        self.best_matches = (1, 2)
-        print("Found best pair {}".format(self.best_matches))
+        self.current_pair = (1, 2)
+        print("Process initial pair {}".format(self.current_pair))
 
         # Perform initial ransac to figure out initial structure
-        initial_matches = self.all_matches[self.best_matches[0]][self.best_matches[1]]
+        initial_matches = self.all_matches[self.current_pair[0]][self.current_pair[1]]
         R1 = np.eye(3)
         t1 = np.zeros(3)
 
@@ -199,30 +211,21 @@ class SFMRunner:
         self.global_poses.append((R1, t1))
         self.global_poses.append((R2, t2))
 
-        self.processed_pairs.clear()
-        self.processed_pairs.add(self.best_matches)
-        self.processed_pairs.add((self.best_matches[1], self.best_matches[0]))
         self.add_points(p3d, p1, 0)
         self.add_points(p3d, p2, 1)
 
         self.global_K.append(initial_matches.K1)
         self.global_K.append(initial_matches.K2)
 
-        # Find next frame
-        while True:  # For now, loops forever until there's no available next frame
-            best_pair = None
-            best_next_frame = None
-            best_prev_frame = None
-
-            # Take second image as the reference image for the next frame, for consistency
-            i = self.best_matches[1]
+        # Process subsequent frames
+        while True:  # For now, loops forever until max frame is reached
+            i = self.current_pair[1]
             j = i + 1
+
+            self.current_pair = (i, j)
 
             if i == self.max_img:
                 break
-
-            if (i, j) in self.processed_pairs or (self.all_matches[i][j] is None):
-                continue
 
             points_2D_from_prev_frame = p2
             matches = self.all_matches[i][j]
@@ -236,36 +239,34 @@ class SFMRunner:
             # find out what that bt points correspond to ct. This is an effort to make sure the 2D points of
             # next frame correspond to already established 3D points
             for p_prime in range(prev_frame_2d.shape[0]):
-                dist = Util.compute_euclidean_distance(points_2D_from_prev_frame, prev_frame_2d[p_prime:p_prime + 1])
+                dist = CameraPose.compute_euclidean_distance(points_2D_from_prev_frame, prev_frame_2d[p_prime:p_prime + 1])
                 mask = np.argmin(dist)
 
                 if dist[mask] < self.dist_threshold:
                     result_prev.append(p3d[mask])
                     result_next.append(next_frame_2d[p_prime])
 
-            best_prev_frame = np.array(result_prev)
-            best_next_frame = np.array(result_next)
-            best_pair = (i, j)
+            result_prev = np.array(result_prev)
+            result_next = np.array(result_next)
 
-            print("Pose estimate pair {}".format(best_pair))
-            self.processed_pairs.add(best_pair)
-            self.processed_pairs.add((best_pair[1], best_pair[0]))
+            print("Pose estimate pair {}".format(self.current_pair))
 
             # Use pose estimation to find current frame R and t
-            matches = self.all_matches[best_pair[0]][best_pair[1]]
+            matches = self.all_matches[self.current_pair[0]][self.current_pair[1]]
 
             K = matches.K2
-            pe = self.pose_estimator(np.asarray(best_prev_frame, dtype=np.float32),
-                                     np.asarray(best_next_frame, dtype=np.float32),
-                                     K=K, ransac_max_it=self.ransac_max_it)
+            pe = self.PoseEstimator(np.asarray(result_prev, dtype=np.float32),
+                                    np.asarray(result_next, dtype=np.float32),
+                                    K=K, ransac_max_it=self.ransac_max_it)
 
             R3, t3, p_inliers = pe.R, pe.t, pe.inliers
             if R3 is None:
-                raise Exception("Cannot determine pose for pair {}".format(best_pair))
+                raise Exception("Cannot determine pose for pair {}".format(self.current_pair))
 
+            # Add inliers as well if inliers were found
             current_frame = self.frame_indices[len(self.frame_indices) - 1] + 1
             if not p_inliers is None:
-                self.add_points(best_prev_frame, best_next_frame, current_frame)
+                self.add_points(result_prev, result_next, current_frame)
 
             # Set current frame as prev frame to prepare for next iteration
             p1 = matches.p1
@@ -282,9 +283,6 @@ class SFMRunner:
             self.global_poses.append((R3, t3))
             self.global_K.append(K)
 
-            # Best match of current frame becomes best match of prev frame
-            self.best_matches = best_pair
-
         # Bundle adjustments to minimize reprojection errors
         num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list = self.prepare_for_ba()
         ba = BundleAdjustment(
@@ -299,11 +297,32 @@ class SFMRunner:
         optimized_camera_params, optimized_points_3D = ba.sparse_bundle_adjustment()
         self.global_points_3D = optimized_points_3D.tolist()
 
-        if not self.export_name is None:
+        if not self.model_name is None:
             self.save_data()
 
+    def corner_detect_and_matching_process(self, i1, i2):
+        print("Processing pair {} {}".format(i1, i2))
+
+        K1 = K2 = self.single_K
+        if self.single_K is None:
+            K1 = CameraPose.construct_K("{}/{}.jpg".format(self.img_path, i1), self.camera_sensor)
+            K2 = CameraPose.construct_K("{}/{}.jpg".format(self.img_path, i2), self.camera_sensor)
+
+        srunner = FeatureRunner("{}/{}.jpg".format(self.img_path, i1), "{}/{}.jpg".format(self.img_path, i2),
+                                feature_extractor_class=ScaleRotInvSIFT, extractor_params=self.extractor_params,
+                                match_threshold=self.match_threshold)
+        p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
+
+        # Initial pair has its own Ransac, no need to run twice
+        if (i1, i2) != (1, 2):
+            p1, p2 = CameraPose.find_inliers(p1, p2, max_iterations=self.ransac_max_it)
+
+        with self.lock:
+            self.all_matches[i1][i2] = Matches(srunner.matches, srunner.confidences, p1, p2, K1, K2)
+            self.all_matches[i2][i1] = Matches(srunner.matches, srunner.confidences, p2, p1, K2, K1)
+
     def save_data(self):
-        np.savez('output/{}.npz'.format(self.export_name), p3d=np.array(self.global_points_3D),
+        np.savez('output/{}.npz'.format(self.model_name), p3d=np.array(self.global_points_3D),
                  frame_idx=np.array(self.frame_indices), pt_idx=np.array(self.point_indices))
 
     def add_points(self, points_3d, points_2d, frame_idx):
@@ -322,11 +341,11 @@ class SFMRunner:
         if not self.global_points_3D:
             return True
 
-        distances = Util.compute_euclidean_distance(np.array(self.global_points_3D), p3d[np.newaxis])
+        distances = CameraPose.compute_euclidean_distance(np.array(self.global_points_3D), p3d[np.newaxis])
         return np.min(distances) >= threshold
 
     def find_existing_point(self, p3d, threshold=1e-6):
-        distances = Util.compute_euclidean_distance(np.array(self.global_points_3D), p3d[np.newaxis])
+        distances = CameraPose.compute_euclidean_distance(np.array(self.global_points_3D), p3d[np.newaxis])
         min_idx = np.argmin(distances)
         if distances[min_idx] < threshold:
             return min_idx
@@ -348,44 +367,20 @@ class SFMRunner:
 
         return num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list
 
-    def corner_detect_and_matching_process(self, i1, i2):
-        with self.lock:
-            if i1 == i2 or (i1, i2) in self.processed_pairs or (i2, i1) in self.processed_pairs:
-                return
+    @staticmethod
+    def load(model_name):
+        """
+        Load a model to visualize
 
-            self.processed_pairs.add((i1, i2))
+        :param model_name: name of the model
+        """
+        npz = np.load('output/{}.npz'.format(model_name))
 
-        print("Processing pair {} {}".format(i1, i2))
+        global_points_3D = npz["p3d"].tolist()
+        frame_indices = npz["frame_idx"].tolist()
+        point_indices = npz["pt_idx"].tolist()
 
-        K1 = Util.construct_K("{}/{}.jpg".format(self.img_path, i1), SensorType.CROP_FRAME)
-        K2 = Util.construct_K("{}/{}.jpg".format(self.img_path, i2), SensorType.CROP_FRAME)
-
-        extractor_params = {
-            'num_interest_points': 2500,
-            'ksize': 3,
-            'gaussian_size': 7,
-            'sigma': 6,
-            'alpha': 0.05,
-            'feature_width': 18,
-            'pyramid_level': 3,
-            'pyramid_scale_factor': 1.1
-        }
-
-        srunner = FeatureRunner("{}/{}.jpg".format(self.img_path, i1), "{}/{}.jpg".format(self.img_path, i2),
-                                feature_extractor_class=ScaleRotInvSIFT, extractor_params=extractor_params,
-                                match_threshold=0.85)
-        p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
-
-        if (i1, i2) != (1, 2):
-            p1, p2 = CameraPose.find_inliers(p1, p2, max_iterations=self.ransac_max_it)
-
-        with self.lock2:
-            self.all_matches[i1][i2] = Matches(srunner.matches, srunner.confidences, p1, p2, K1, K2)
-            self.all_matches[i2][i1] = Matches(srunner.matches, srunner.confidences, p2, p1, K2, K1)
-
-            if self.best_matches is None or srunner.matches.shape[0] > \
-                    self.all_matches[self.best_matches[0]][self.best_matches[1]].matches.shape[0]:
-                self.best_matches = (i1, i2)
+        V3D(global_points_3D, frame_indices, point_indices)
 
 
 ###############

@@ -2,7 +2,16 @@ import os
 import cv2
 from PIL import Image
 
-def fast_resize(input_folder, output_folder, exif=True):
+
+def fast_resize(input_folder, output_folder, ratio=0.3, exif=True):
+    """
+    Resize images
+
+    :param input_folder: directory containing the images
+    :param output_folder: output directory
+    :param ratio: ratio to resize to (both H and W, aspect ratio stays the same)
+    :param exif: if EXIF data should be transferred. Set to False if image has no EXIF data
+    """
     # Ensure the output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
@@ -21,7 +30,7 @@ def fast_resize(input_folder, output_folder, exif=True):
                 resized_pillow.save(output_path, format='JPEG', exif=exif_data)
             else:
                 resized_pillow.save(output_path, format='JPEG')
-            print(f"Resized and saved with EXIF: {output_path}")
+            print(f"Resized: {output_path}")
         except Exception as e:
             print(f"Failed to transfer EXIF data for {original_path}: {e}")
 
@@ -37,8 +46,8 @@ def fast_resize(input_folder, output_folder, exif=True):
             # If the image is successfully read
             if image is not None:
                 # Calculate the new dimensions
-                new_width = int(image.shape[1] / 3)
-                new_height = int(image.shape[0] / 3)
+                new_width = int(image.shape[1] * ratio)
+                new_height = int(image.shape[0] * ratio)
 
                 # Resize the image
                 resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
