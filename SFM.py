@@ -85,18 +85,39 @@ class Util:
 
     @staticmethod
     def project_points_to_image(points_3D, K, pose):
+        """
+        Projects 3D points onto the 2D image plane.
+
+        Args:
+            points_3D (np.ndarray): Array of 3D points (N x 3).
+            K (np.ndarray): Camera intrinsic matrix (3x3).
+            pose (tuple): Camera pose (R, t), where R is the rotation matrix (3x3) and t is the translation vector (3x1)
+
+        Returns:
+            np.ndarray: Array of 2D projected points (N x 2).
+        """
+        # R, t = pose
+        # R, _ = cv2.Rodrigues(R)  # Convert rotation vector to matrix
+        #
+        # # Homogeneous transformation matrix
+        # T = np.eye(4)
+        # T[:3, :3] = R  # Rotation matrix
+        # T[:3, 3] = t.flatten()  # Translation vector
+        #
+        # points_3D_h = np.hstack([points_3D, np.ones((len(points_3D), 1))])  # Convert to homogeneous
+        # projections = K @ T[:3, :] @ points_3D_h.T
+        # projections /= projections[2, :]  # Normalize to homogeneous
+        # return projections[:2, :].T  # Return 2D points
         R, t = pose
-        R, _ = cv2.Rodrigues(R)  # Convert rotation vector to matrix
 
-        # Homogeneous transformation matrix
-        T = np.eye(4)
-        T[:3, :3] = R  # Rotation matrix
-        T[:3, 3] = t.flatten()  # Translation vector
+        if len(t.shape) == 1:
+            t = t.reshape(-1, 1)
 
-        points_3D_h = np.hstack([points_3D, np.ones((len(points_3D), 1))])  # Convert to homogeneous
-        projections = K @ T[:3, :] @ points_3D_h.T
-        projections /= projections[2, :]  # Normalize to homogeneous
-        return projections[:2, :].T  # Return 2D points
+        points_3D_h = np.hstack([points_3D, np.ones((points_3D.shape[0], 1))])  # Convert to homogeneous
+        projection_matrix = K @ np.hstack((R, t))  # Combine R and T to form [R | T]
+        points_2D_h = projection_matrix @ points_3D_h.T  # Project points
+        points_2D = points_2D_h[:2, :] / points_2D_h[2, :]  # Normalize to Cartesian
+        return points_2D.T
 
 
 class CameraPose:
@@ -311,29 +332,3 @@ class CameraPose:
         R, _ = cv2.Rodrigues(rvec)
 
         return R, tvec
-    
-    # def reprojection_error(params, n_cameras, n_points, camera_indices, point_indices, points_2d, K):
-    #     # Reshape parameters
-    #     camera_params = params[:n_cameras * 6].reshape((n_cameras, 6))  # 3 for rotation, 3 for translation
-    #     points_3d = params[n_cameras * 6:].reshape((n_points, 3))
-    #
-    #     # Compute reprojection error
-    #     errors = []
-    #     for cam_idx, pt_idx, pt_2d in zip(camera_indices, point_indices, points_2d):
-    #         # Extract camera pose
-    #         rvec = camera_params[cam_idx, :3]  # Rotation vector
-    #         tvec = camera_params[cam_idx, 3:]  # Translation vector
-    #
-    #         # Convert rotation vector to matrix
-    #         R, _ = cv2.Rodrigues(rvec)
-    #
-    #         # Project 3D point
-    #         X_world = points_3d[pt_idx]
-    #         X_cam = R @ X_world + tvec
-    #         X_proj = K @ X_cam
-    #         X_proj /= X_proj[2]  # Normalize to homogeneous
-    #
-    #         # Compute error
-    #         errors.append(np.linalg.norm(X_proj[:2] - pt_2d))
-    #
-    #     return np.array(errors)

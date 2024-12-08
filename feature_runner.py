@@ -22,7 +22,7 @@ class FeatureRunner:
         self._init_images(im1_path, im2_path, scale_factor)
         self._init_feature_extraction(extractor_params)
         self._match_features()
-        self._ransac_fundamental_matrix()
+        # self._ransac_fundamental_matrix()
 
         # Optional visualizations
         if print_img:

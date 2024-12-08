@@ -5,7 +5,7 @@ from PIL.ExifTags import TAGS
 from SFM import SensorType
 #from runner import FeatureRunner, SFMRunner
 from feature_runner import FeatureRunner
-from SFM_runner import SFMRunner, OpenCVSFMRunner
+from SFM_runner import SFMRunner
 from sys import platform
 from FeatureExtractor import ScaleRotInvSIFT, NaiveSIFT
 import numpy as np

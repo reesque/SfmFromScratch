@@ -1,4 +1,6 @@
 import os
+
+import cv2
 import numpy as np
 from typing import Tuple
 from PIL import Image, ImageDraw
@@ -150,20 +152,22 @@ def _numpy_arr_to_PIL_image(img: np.ndarray, scale_to_255: False) -> PIL.Image:
     return PIL.Image.fromarray(np.uint8(img))
 
 
+# def _load_image(path: str) -> np.ndarray:
+#     """
+#     Args:
+#         path: string representing a file path to an image
+#
+#     Returns:
+#         float_img_rgb: float or double array of shape (m,n,c) or (m,n)
+#            and in range [0,1], representing an RGB image
+#     """
+#     img = PIL.Image.open(path)
+#     img = np.asarray(img, dtype=float)
+#     float_img_rgb = _im2single(img)
+#     return float_img_rgb
+
 def _load_image(path: str) -> np.ndarray:
-    """
-    Args:
-        path: string representing a file path to an image
-
-    Returns:
-        float_img_rgb: float or double array of shape (m,n,c) or (m,n)
-           and in range [0,1], representing an RGB image
-    """
-    img = PIL.Image.open(path)
-    img = np.asarray(img, dtype=float)
-    float_img_rgb = _im2single(img)
-    return float_img_rgb
-
+    return cv2.imread(path)[:, :, ::-1]
 
 def _save_image(path: str, im: np.ndarray) -> None:
     """
@@ -463,12 +467,12 @@ def ransac_fundamental_matrix(
         # calculate geometric distances from points in image A to epipolar lines in image  B
         l_b = (F @ np.vstack((matches_a[:, 0], matches_a[:, 1], np.ones(M)))).T
         b_a, b_b, b_c = l_b[:, 0], l_b[:, 1], l_b[:, 2]
-        xb_to_lb_distances = np.abs(b_a * matches_b[:, 0] + b_b * matches_b[:, 1] + b_c) / np.sqrt(b_a ** 2 + b_b ** 2)
+        xb_to_lb_distances = np.abs(b_a * matches_b[:, 0] + b_b * matches_b[:, 1] + b_c) / np.sqrt(b_a ** 2 + b_b ** 2) + 1e-10
 
         # calculate geometric distances from points in image B to epipolar lines in image A
         l_a = (F.T @ np.vstack((matches_b[:, 0], matches_b[:, 1], np.ones(M)))).T
         a_a, a_b, a_c = l_a[:, 0], l_a[:, 1], l_a[:, 2]
-        xa_to_la_distances = np.abs(a_a * matches_a[:, 0] + a_b * matches_a[:, 1] + a_c) / np.sqrt(a_a ** 2 + a_b ** 2)
+        xa_to_la_distances = np.abs(a_a * matches_a[:, 0] + a_b * matches_a[:, 1] + a_c) / np.sqrt(a_a ** 2 + a_b ** 2) + 1e-10
 
         # compute total error
         error = xb_to_lb_distances + xa_to_la_distances
@@ -485,3 +489,97 @@ def ransac_fundamental_matrix(
             bestCount = len(inliers_a)
 
     return best_F, inliers_a, inliers_b
+
+
+def get_matches(pic_a: np.ndarray, pic_b: np.ndarray, n_feat: int) -> (np.ndarray, np.ndarray):
+    """
+    CLASS IMPLEMENTATION USED FOR TESTING... REPLACE
+    """
+    pic_a = cv2.cvtColor(pic_a, cv2.COLOR_BGR2GRAY)
+    pic_b = cv2.cvtColor(pic_b, cv2.COLOR_BGR2GRAY)
+
+    try:
+        sift = cv2.xfeatures2d.SIFT_create()
+    except:
+        sift = cv2.SIFT_create()
+
+    try:
+        kp_a, desc_a = sift.detectAndCompute(pic_a, None)
+        kp_b, desc_b = sift.detectAndCompute(pic_b, None)
+    except Exception as e:
+        raise ValueError(f"Error in SIFT detectAndCompute: {e}")
+
+    dm = cv2.BFMatcher(cv2.NORM_L2)
+    matches = dm.knnMatch(desc_b, desc_a, k=2)
+    good_matches = []
+    for m, n in matches:
+        if m.distance / n.distance <= 0.7:
+            good_matches.append(m)
+    pts_a = []
+    pts_b = []
+    for m in good_matches[: int(n_feat)]:
+        pts_a.append(kp_a[m.trainIdx].pt)
+        pts_b.append(kp_b[m.queryIdx].pt)
+
+    pts_a = np.array(pts_a)
+    pts_b = np.array(pts_b)
+
+    return matches, pts_a, pts_b
+
+def hstack_images(imgA: np.ndarray, imgB: np.ndarray) -> np.ndarray:
+    """Stacks 2 images side-by-side
+
+    Args:
+        imgA: a numpy array representing image 1.
+        imgB: a numpy array representing image 2.
+
+    Returns:
+        img: a numpy array representing the images stacked side by side.
+    """
+    Height = max(imgA.shape[0], imgB.shape[0])
+    Width = imgA.shape[1] + imgB.shape[1]
+
+    newImg = np.zeros((Height, Width, 3), dtype=imgA.dtype)
+    newImg[: imgA.shape[0], : imgA.shape[1], :] = imgA
+    newImg[: imgB.shape[0], imgA.shape[1] :, :] = imgB
+
+    return newImg
+
+def _show_correspondence2(
+    imgA: np.ndarray, imgB: np.ndarray, X1: np.ndarray, Y1: np.ndarray, X2: np.ndarray, Y2: np.ndarray, line_colors=None
+):
+    """Visualizes corresponding points between two images. Corresponding points
+    will have the same random color.
+
+    Args:
+        imgA: a numpy array representing image 1.
+        imgB: a numpy array representing image 2.
+        X1: a numpy array representing x coordinates of points from image 1.
+        Y1: a numpy array representing y coordinates of points from image 1.
+        X2: a numpy array representing x coordinates of points from image 2.
+        Y2: a numpy array representing y coordinates of points from image 2.
+        line_colors: a N x 3 numpy array containing colors of correspondence
+            lines (optional)
+
+    Returns:
+        None
+    """
+    newImg = hstack_images(imgA, imgB)
+    shiftX = imgA.shape[1]
+    X1 = X1.astype(int)
+    Y1 = Y1.astype(int)
+    X2 = X2.astype(int)
+    Y2 = Y2.astype(int)
+
+    dot_colors = np.random.rand(len(X1), 3)
+    if imgA.dtype == np.uint8:
+        dot_colors *= 255
+    if line_colors is None:
+        line_colors = dot_colors
+
+    for x1, y1, x2, y2, dot_color, line_color in zip(X1, Y1, X2, Y2, dot_colors, line_colors):
+        newImg = cv2.circle(newImg, (x1, y1), 5, dot_color, -1)
+        newImg = cv2.circle(newImg, (x2 + shiftX, y2), 5, dot_color, -1)
+        newImg = cv2.line(newImg, (x1, y1), (x2 + shiftX, y2), line_color, 2, cv2.LINE_AA)
+
+    return newImg
