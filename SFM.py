@@ -5,6 +5,7 @@ from PIL import Image
 from PIL.ExifTags import TAGS
 from enum import Enum
 from scipy.optimize import least_squares
+from scipy.sparse import lil_matrix
 
 
 class SensorType(Enum):
@@ -91,7 +92,8 @@ class CameraPose:
         self.K1 = K1
         self.K2 = K2
 
-    def normalize_points(self, points):
+    @staticmethod
+    def normalize_points(points):
         mean = np.mean(points[:, :2], axis=0)
         cu, cv = mean[0], mean[1]
 
@@ -108,7 +110,8 @@ class CameraPose:
 
         return points_normalized, T
 
-    def unnormalize_F(self, F_norm, T_a, T_b):
+    @staticmethod
+    def unnormalize_F(F_norm, T_a, T_b):
         return T_b.T @ F_norm @ T_a
 
     @staticmethod
@@ -122,6 +125,8 @@ class CameraPose:
 
         if len(self.pts1) < 8:
             return None, None, None, None
+
+        np.random.seed(5)
 
         for _ in range(max_iterations):
             # Randomly sample 8 correspondences
@@ -147,6 +152,12 @@ class CameraPose:
             R1 = np.dot(U, np.dot(W, Vt))
             R2 = np.dot(U, np.dot(W.T, Vt))
 
+            if np.linalg.det(R1) < 0:
+                R1 = R1 * -1
+
+            if np.linalg.det(R2) < 0:
+                R2 = R2 * -1
+
             # Translation vector is the last column of U
             T = U[:, 2]
 
@@ -155,34 +166,68 @@ class CameraPose:
                 if not self._check_valid_pose(R_base, T_base, R_candidate, T_candidate):
                     continue  # Skip invalid pose
 
-                inliers1, inliers2 = [], []
+                # Homogeneous
+                sample_a_homogeneous = np.column_stack((self.pts1, np.ones(len(self.pts1))))
+                sample_b_homogeneous = np.column_stack((self.pts2, np.ones(len(self.pts2))))
 
-                for i in range(len(self.pts1)):
-                    x1 = self.pts1[i]
-                    x2 = self.pts2[i]
+                # Epipolar line of point b: l_2 = F.p_1 due to epipolar constraint
+                lb = (F @ sample_a_homogeneous.T).T
 
-                    # Epipolar line of point a: l_1 = F.P_2 due to epipolar constraint
-                    la = F @ np.array([x1[0], x1[1], 1])
+                # Dist is |lb . p2| / norm(lb)
+                distances = np.abs(np.sum(lb * sample_b_homogeneous, axis=1)) / np.sqrt(lb[:, 0] ** 2 + lb[:, 1] ** 2)
 
-                    # Dist is |la . P2| / norm(la)
-                    distance = np.abs(la @ np.array([x2[0], x2[1], 1])) / np.sqrt(la[0] ** 2 + la[1] ** 2)
-                    if distance < threshold:
-                        inliers1.append(x1)
-                        inliers2.append(x2)
+                inlier_mask = distances < threshold
 
                 # If this rotation and translation give more inliers, select it as the best
-                if len(inliers1) > len(best_inliers1):
-                    best_inliers1 = inliers1
-                    best_inliers2 = inliers2
+                if np.sum(inlier_mask) > len(best_inliers1):
+                    best_inliers1 = self.pts1[inlier_mask]
+                    best_inliers2 = self.pts2[inlier_mask]
                     best_r, best_t = R_candidate, T_candidate
 
         return best_r, best_t, np.array(best_inliers1), np.array(best_inliers2)
 
-    def _compute_fundamental_matrix(self, p1, p2) -> np.ndarray:
+    @staticmethod
+    def find_inliers(p1, p2, threshold=1.0, max_iterations=1000):
+        best_inliers1, best_inliers2 = [], []
+
+        if len(p1) < 8:
+            return None, None, None, None
+
+        np.random.seed(5)
+
+        for _ in range(max_iterations):
+            # Randomly sample 8 correspondences
+            indices = np.random.choice(len(p1), 8, replace=False)
+            sample_points1 = p1[indices]
+            sample_points2 = p2[indices]
+
+            # Compute the fundamental matrix using the 8-point algorithm
+            F = CameraPose._compute_fundamental_matrix(sample_points1, sample_points2)
+
+            sample_a_homogeneous = np.column_stack((p1, np.ones(len(p1))))
+            sample_b_homogeneous = np.column_stack((p2, np.ones(len(p2))))
+
+            # Epipolar line of point b: l_2 = F.p_1 due to epipolar constraint
+            lb = (F @ sample_a_homogeneous.T).T
+
+            # Dist is |lb . p2| / norm(lb)
+            distances = np.abs(np.sum(lb * sample_b_homogeneous, axis=1)) / np.sqrt(lb[:, 0] ** 2 + lb[:, 1] ** 2)
+
+            inlier_mask = distances < threshold
+
+            # If this rotation and translation give more inliers, select it as the best
+            if np.sum(inlier_mask) > len(best_inliers1):
+                best_inliers1 = p1[inlier_mask]
+                best_inliers2 = p2[inlier_mask]
+
+        return np.array(best_inliers1), np.array(best_inliers2)
+
+    @staticmethod
+    def _compute_fundamental_matrix(p1, p2) -> np.ndarray:
         # Ensure points are in homogeneous coordinates
         n = p1.shape[0]
-        pts1_hom, T1 = self.normalize_points(np.hstack([p1, np.ones((n, 1))]))
-        pts2_hom, T2 = self.normalize_points(np.hstack([p2, np.ones((n, 1))]))
+        pts1_hom, T1 = CameraPose.normalize_points(np.hstack([p1, np.ones((n, 1))]))
+        pts2_hom, T2 = CameraPose.normalize_points(np.hstack([p2, np.ones((n, 1))]))
 
         # Build the matrix A, where each row corresponds to a correspondence
         # The derivation is as followed:
@@ -222,7 +267,7 @@ class CameraPose:
         D[2] = 0  # Set the smallest singular value to 0
         F_rank2 = np.dot(U, np.dot(np.diag(D), Vt))
 
-        F_rank2 = self.unnormalize_F(F_rank2, T1, T2)
+        F_rank2 = CameraPose.unnormalize_F(F_rank2, T1, T2)
 
         return F_rank2
 
@@ -231,14 +276,18 @@ class CameraPose:
             x1 = np.array([self.pts1[i, 0], self.pts1[i, 1], 1])  # Homogeneous coordinates for pts1
             x2 = np.array([self.pts2[i, 0], self.pts2[i, 1], 1])  # Homogeneous coordinates for pts2
 
-            P1 = CameraPose.calculate_projection_matrix(R_base, T_base)
-            P2 = CameraPose.calculate_projection_matrix(R_candidate, T_candidate)
+            P1 = CameraPose.calculate_projection_matrix(R_base, T_base, self.K1)
+            P2 = CameraPose.calculate_projection_matrix(R_candidate, T_candidate, self.K2)
 
             # Triangulate the 3D point from both images
             X = CameraPose.triangulate_point(x1, x2, P1, P2)
 
+            # Convert X to camera coordinates of both views
+            X_base = R_base @ X[:3] + T_base
+            X_candidate = R_candidate @ X[:3] + T_candidate
+
             # Check if the depth (Z) of the triangulated point is positive in both views
-            if X[2] < 0:
+            if X_base[2] < 1e-6 or X_candidate[2] < 1e-6:
                 return False
 
         return True
@@ -261,11 +310,11 @@ class CameraPose:
         return X[:3]  # Return 3D point (X, Y, Z)
 
     @staticmethod
-    def calculate_projection_matrix(R, t):
-        return np.hstack([R, t.reshape(-1, 1)])
+    def calculate_projection_matrix(R, t, K):
+        return K @ np.hstack([R, t.reshape(-1, 1)])
 
     @staticmethod
-    def solve_pnp(pts_3d, pts_2d, K, dist_coeffs=None):
+    def solve_pnp(pts_3d, pts_2d, K, ransac_max_it=100, dist_coeffs=None):
         # Ensure points are float32
         pts_3d = np.asarray(pts_3d, dtype=np.float32)
         pts_2d = np.asarray(pts_2d, dtype=np.float32)
@@ -273,22 +322,26 @@ class CameraPose:
         if pts_3d.shape[0] < 4 or pts_2d.shape[0] < 4:
             return None, None
 
+        np.random.seed(5)
+
         # SolvePnP with RANSAC to handle outliers
-        success, rvec, tvec = cv2.solvePnP(
+        success, rvec, tvec, p = cv2.solvePnPRansac(
             objectPoints=pts_3d,  # 3D points in world space
             imagePoints=pts_2d,  # 2D points in image space
             cameraMatrix=K,  # Intrinsic camera matrix
             distCoeffs=dist_coeffs,  # Distortion coefficients (None if undistorted)
+            reprojectionError=8.0,
+            iterationsCount=ransac_max_it,
             flags=cv2.SOLVEPNP_ITERATIVE  # Standard iterative approach
         )
 
         if not success:
-            return None, None
+            return None, None, None
 
         # Back to rotation matrix
         R, _ = cv2.Rodrigues(rvec)
 
-        return R, tvec
+        return R, tvec, p
 
 
 class BundleAdjustment:
@@ -312,6 +365,7 @@ class BundleAdjustment:
             initial_params,
             args=(self.num_cameras, self.num_points, self.camera_indices, self.point_indices, self.points_2d, self.K_list),
             verbose=2,
+            ftol=1e-2,
             jac='2-point',  # Sparse Jacobian approximation
             method='trf',  # Trust-region reflective
         )

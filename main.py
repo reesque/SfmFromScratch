@@ -1,12 +1,11 @@
 import matplotlib
 
-from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 from runner import FeatureRunner, SFMRunner
 from sys import platform
 
 
 def main():
-    SFMRunner()
+    SFMRunner("test_data/tallneck2_mini")
     
 
 if __name__ == "__main__":

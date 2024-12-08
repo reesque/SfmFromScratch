@@ -2,7 +2,7 @@ import os
 import cv2
 from PIL import Image
 
-def fast_resize(input_folder, output_folder):
+def fast_resize(input_folder, output_folder, exif=True):
     # Ensure the output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
@@ -11,12 +11,16 @@ def fast_resize(input_folder, output_folder):
         try:
             # Open the original image with Pillow
             original = Image.open(original_path)
-            exif_data = original.info.get("exif")
+            if exif:
+                exif_data = original.info.get("exif")
 
             # Save the resized image with EXIF data using Pillow
             resized_pillow = Image.fromarray(cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB))
             output_path = os.path.join(output_folder, os.path.basename(original_path))
-            resized_pillow.save(output_path, format='JPEG', exif=exif_data)
+            if exif:
+                resized_pillow.save(output_path, format='JPEG', exif=exif_data)
+            else:
+                resized_pillow.save(output_path, format='JPEG')
             print(f"Resized and saved with EXIF: {output_path}")
         except Exception as e:
             print(f"Failed to transfer EXIF data for {original_path}: {e}")
