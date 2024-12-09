@@ -253,6 +253,22 @@ class CameraPose:
         return X[:3]  # Return 3D point (X, Y, Z)
 
     @staticmethod
+    def triangulate_points(x1, x2, P1, P2):
+        n = x1.shape[0]
+        pts1_hom, T1 = CameraPose.normalize_points(np.hstack([x1, np.ones((n, 1))]))
+        pts2_hom, T2 = CameraPose.normalize_points(np.hstack([x2, np.ones((n, 1))]))
+
+        P1_normalized = T1 @ P1
+        P2_normalized = T2 @ P2
+
+        p3d = np.array([CameraPose.triangulate_point(pts1, pts2, P1_normalized, P2_normalized) for pts1, pts2 in zip(pts1_hom, pts2_hom)])
+
+        # Convert back to Euclidean coordinates
+        p3d = p3d[:, :3]
+
+        return p3d
+
+    @staticmethod
     def calculate_projection_matrix(R, t, K):
         return K @ np.hstack([R, t.reshape(-1, 1)])
 
@@ -329,6 +345,26 @@ class CameraPose:
         # Full distance matrix
         return np.linalg.norm(arr1[:, np.newaxis] - arr2, axis=2)
 
+    @staticmethod
+    def project_point(point_3d, R, t, K):
+        if R.shape == (3,):
+            R = cv2.Rodrigues(R)[0]
+
+        point_3d_h = np.append(point_3d, 1)
+        P = CameraPose.calculate_projection_matrix(R, t, K)
+        point_proj = P @ point_3d_h
+        return point_proj[:2] / point_proj[2]
+
+    @staticmethod
+    def compute_reprojection_error(points_3d, points_2d, R, t, K):
+        # Project 3D points onto the image plane
+        projected_points = np.array([CameraPose.project_point(p3d, R, t, K) for p3d in points_3d])
+
+        # Compute the error
+        errors = CameraPose.compute_euclidean_distance(points_2d, projected_points)
+        mean_error = np.mean(errors)
+        return mean_error
+
 
 class BundleAdjustment:
     def __init__(self, num_cameras, num_points, camera_indices, point_indices, points_2d, camera_params, points_3d, K_list):
@@ -351,7 +387,7 @@ class BundleAdjustment:
             initial_params,
             args=(self.num_cameras, self.num_points, self.camera_indices, self.point_indices, self.points_2d, self.K_list),
             verbose=2,
-            ftol=1e-2,
+            ftol=1e-6,
             jac='2-point',  # Sparse Jacobian approximation
             method='trf',  # Trust-region reflective
         )
@@ -361,11 +397,6 @@ class BundleAdjustment:
         optimized_points_3d = result.x[self.num_cameras * 6:].reshape((self.num_points, 3))
 
         return optimized_camera_params, optimized_points_3d
-
-    def project_point(self, point_3d, R, t, K):
-        point_cam = R @ point_3d + t
-        point_proj = K @ point_cam
-        return point_proj[:2] / point_proj[2]
 
     def compute_residuals(self, params, num_cameras, num_points, camera_indices, point_indices, points_2d, K_list):
         # 6 params in total for each camera, 3 for Rotation, 3 for translation
@@ -384,7 +415,7 @@ class BundleAdjustment:
             # Reproject the 3D point
             point_3d = points_3d[point_idx]
             K = K_list[cam_idx]
-            projected_2d = self.project_point(point_3d, R, t, K)
+            projected_2d = CameraPose.project_point(point_3d, R, t, K)
 
             # Compute residual (reprojection error)
             residuals.append(projected_2d - observed_2d)

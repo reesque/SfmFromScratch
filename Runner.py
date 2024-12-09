@@ -167,6 +167,7 @@ class SFMRunner:
         self.ransac_max_it = CameraPose.calculate_num_ransac_iterations(0.98, 8, 0.4)
         self.all_matches: list[list[Matches | None]] = [[None for _ in range(self.max_img + 1)] for _ in
                                                         range(self.max_img + 1)]
+        self.global_reprojection_error = []
 
         # Lock for threading
         self.lock = Lock()
@@ -204,17 +205,11 @@ class SFMRunner:
         P2 = CameraPose.calculate_projection_matrix(R2, t2, initial_matches.K2)
         p3d = np.array([CameraPose.triangulate_point(pts1, pts2, P1, P2) for pts1, pts2 in zip(p1, p2)])
 
-        R1, _ = cv2.Rodrigues(R1)
         R2, _ = cv2.Rodrigues(R2)
 
         # Append data for Bundle Adjustment later
-        self.global_poses.append((R1, t1))
         self.global_poses.append((R2, t2))
-
-        self.add_points(p3d, p1, 0)
-        self.add_points(p3d, p2, 1)
-
-        self.global_K.append(initial_matches.K1)
+        self.add_points(p3d, p2, 0)
         self.global_K.append(initial_matches.K2)
 
         # Process subsequent frames
@@ -285,6 +280,9 @@ class SFMRunner:
 
         # Bundle adjustments to minimize reprojection errors
         num_cameras, num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list = self.prepare_for_ba()
+        print("Total reprojection error before BA: {}".format(self.total_reprojection_error(
+            num_points, camera_indices, point_indices, points_2D, camera_params, points_3D, K_list)))
+
         ba = BundleAdjustment(
             camera_params=camera_params,
             num_cameras=num_cameras,
@@ -296,9 +294,36 @@ class SFMRunner:
             K_list=K_list)
         optimized_camera_params, optimized_points_3D = ba.sparse_bundle_adjustment()
         self.global_points_3D = optimized_points_3D.tolist()
+        print("Total reprojection error after BA: {}".format(self.total_reprojection_error(
+            num_points, camera_indices, point_indices, points_2D, optimized_camera_params, optimized_points_3D, K_list)))
 
         if not self.model_name is None:
             self.save_data()
+
+    def total_reprojection_error(self, num_points, camera_indices, point_indices, points_2D,
+                                 camera_params, points_3D, K_list):
+        total_error = 0
+        n_points = num_points
+
+        for i in range(n_points):
+            camera_idx = camera_indices[i]
+            point_idx = point_indices[i]
+
+            # Get the optimized camera parameters (rotation R, translation t)
+            R, t = camera_params[camera_idx][:3], camera_params[camera_idx][3:6]
+
+            # Get the optimized 3D point
+            point_3d = points_3D[point_idx]
+
+            # Project the 3D point onto the image plane
+            projected_point = CameraPose.project_point(point_3d, R, t, K_list[camera_idx])
+
+            # Calculate the error (Euclidean distance between the projected point and the observed 2D point)
+            error = np.linalg.norm(projected_point - points_2D[i])
+            total_error += error
+
+        mean_error = total_error / n_points
+        return mean_error
 
     def corner_detect_and_matching_process(self, i1, i2):
         print("Processing pair {} {}".format(i1, i2))
