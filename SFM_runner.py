@@ -33,7 +33,7 @@ class SFMRunner:
     def __init__(self):
         self.img_path = "test_data/fountain_mini"
         self.next_frame_point_dist_thresh = 5.0
-        self.max_img = 3
+        self.max_img = 2
 
         # Global structures for poses, points, and intrinsics
         self.global_poses = []  # Stores (R, t) for each frame
@@ -88,12 +88,24 @@ class SFMRunner:
         E = self.K.T @ F @ self.K
         _, R2, t2, _ = cv2.recoverPose(E, inlier_p1, inlier_p2, self.K)
 
+        # Convert 2D points to homogeneous coordinates
+        inlier_p1_hom = np.hstack((inlier_p1, np.ones((len(inlier_p1), 1))))
+        inlier_p2_hom = np.hstack((inlier_p2, np.ones((len(inlier_p2), 1))))
+
+        # Normalize 2D points
+        normalized_p1 = (np.linalg.inv(self.K) @ inlier_p1_hom.T).T
+        normalized_p2 = (np.linalg.inv(self.K) @ inlier_p2_hom.T).T
+
+        # Convert 2D Homogeneous to 2D
+        normalized_p1 = cv2.convertPointsFromHomogeneous(normalized_p1)[:, 0, :]
+        normalized_p2 = cv2.convertPointsFromHomogeneous(normalized_p2)[:, 0, :]
+
         # Triangulate initial 3D points
         P1 = CameraPose.calculate_projection_matrix(self.K, np.eye(3), np.zeros(3))
         P2 = CameraPose.calculate_projection_matrix(self.K, R2, t2)
 
-        points_3D = cv2.triangulatePoints(P1, P2, inlier_p1.T, inlier_p2.T)
-        points_3D = cv2.convertPointsFromHomogeneous(points_3D.T)[:, 0, :]
+        points_4D = cv2.triangulatePoints(P1, P2, normalized_p1.T, normalized_p2.T)
+        points_3D = cv2.convertPointsFromHomogeneous(points_4D.T)[:, 0, :]
 
         print(f"Found {len(points_3D)} 2D-3D matches for initial pair.")
 
@@ -101,8 +113,8 @@ class SFMRunner:
         self.global_poses.extend([(np.eye(3), np.zeros(3)), (R2, t2.flatten())])
 
         # Store 2D points and frame indices
-        self.add_points(points_3D, inlier_p1, 1)
-        self.add_points(points_3D, inlier_p2, 2)
+        self.add_points(points_3D, inlier_p1, 0)
+        self.add_points(points_3D, inlier_p2, 1)
 
         self.processed_pairs.add((1, 2))
 
@@ -152,6 +164,13 @@ class SFMRunner:
                 print(f"High reprojection error for view {new_view_idx}. Skipping...")
                 # continue
 
+            new_points = np.array(points_3D)
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.scatter(new_points[:, 0], new_points[:, 1], new_points[:, 2], c='orange', label='3D Points (before triangulation')
+            ax.legend()
+            plt.show()
+
             # Step 3: Triangulate Points Between the New View and Previous Views
             new_3D_points = self.triangulate_new_points(new_view_idx, R, t)
 
@@ -164,7 +183,7 @@ class SFMRunner:
 
             # Step 4: Update Global Structures
             self.global_poses.append((R, t.flatten()))
-            self.add_points(new_3D_points, points_2D, new_view_idx)
+            self.add_points(new_3D_points, inliers, new_view_idx)
 
             print(f"View {new_view_idx} processed. Total 3D points: {len(self.global_points_3D)}")
 
@@ -219,7 +238,7 @@ class SFMRunner:
         """
         new_3D_points = []
         for prev_view_idx in range(len(self.global_poses)):
-            matches = self.all_matches[prev_view_idx][new_view_idx]
+            matches = self.all_matches[prev_view_idx + 1][new_view_idx]
             if matches is None:
                 continue
 
@@ -227,20 +246,22 @@ class SFMRunner:
             P1 = CameraPose.calculate_projection_matrix(self.K, *self.global_poses[prev_view_idx])
             P2 = CameraPose.calculate_projection_matrix(self.K, R, t)
 
-            #normalized_p1 = cv2.undistortPoints(matches.p1[:, np.newaxis], self.K, None).squeeze()
-            #normalized_p2 = cv2.undistortPoints(matches.p2[:, np.newaxis], self.K, None).squeeze()
+            normalized_p1 = cv2.undistortPoints(matches.p1[:, np.newaxis], self.K, None).squeeze()
+            normalized_p2 = cv2.undistortPoints(matches.p2[:, np.newaxis], self.K, None).squeeze()
 
-            points_4D = cv2.triangulatePoints(P1, P2, matches.p1.T, matches.p2.T)
-            #points_4D = cv2.triangulatePoints(P1, P2, normalized_p1.T, normalized_p2.T)
+            # points_4D = cv2.triangulatePoints(P1, P2, matches.p1.T, matches.p2.T)
+            points_4D = cv2.triangulatePoints(P1, P2, normalized_p1.T, normalized_p2.T)
             points_3D = cv2.convertPointsFromHomogeneous(points_4D.T)
 
+            print("Num point z above 0: ", np.sum(points_3D[:, 0, 2] > 0))
+
             # Filter and add valid points
-            valid_points = []
+            # valid_points = []
             for point in points_3D:
-                if self.is_new_point(point):
-                   new_3D_points.append(point)
-                # if point[2] > 0:
-                #     valid_points.append(point)
+                # if self.is_new_point(point):
+                #    new_3D_points.append(point)
+                if point[0, 2] > 0:
+                    new_3D_points.append(point)
             # valid_points = np.array(valid_points)
             #
             # new_3D_points.append(valid_points)
