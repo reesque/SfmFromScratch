@@ -4,7 +4,9 @@ import numpy as np
 class FeatureExtractor(ABC):
     """Interface for feature extractor classes (on images)."""
     
-    def __init__(self, image: np.ndarray, extractor_params: dict = {}):
+    def __init__(self, image: np.ndarray, extractor_params=None):
+        if extractor_params is None:
+            extractor_params = {}
         self.image = image
         self.num_interest_points = extractor_params.get('num_interest_points', 2500)
     

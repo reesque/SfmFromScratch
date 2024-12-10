@@ -7,7 +7,6 @@ import PIL
 from PIL import Image, ImageDraw
 
 from FeatureExtractor import FeatureExtractor
-from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 from FeatureMatcher import NNRatioFeatureMatcher
 from PoseEstimator import PoseEstimator
 from SFM import *
@@ -16,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
 from Visualizer import V3D
+
+from Util import print_reprojection_error
 
 
 class FeatureRunner:
@@ -126,7 +127,8 @@ class Matches:
 
 class SFMRunner:
     def __init__(self, img_path, max_img, extractor_params, match_threshold=0.85, pose_estimator: PoseEstimator = None,
-                 dist_threshold=5.0, single_K=None, camera_sensor: SensorType = None, model_name=None):
+                 feature_extractor_class: FeatureExtractor = None, dist_threshold=5.0, single_K=None,
+                 camera_sensor: SensorType = None, model_name=None):
         """
         Structure from motion pipeline. Process images sequentially, ordered ascending by name. Name should be
         single integer, from 1 to max_img
@@ -149,6 +151,7 @@ class SFMRunner:
         self.max_img = max_img
         self.dist_threshold = dist_threshold
         self.model_name = model_name
+        self.feature_extractor_class = feature_extractor_class
         self.extractor_params = extractor_params
         self.match_threshold = match_threshold
         self.camera_sensor = camera_sensor
@@ -204,6 +207,9 @@ class SFMRunner:
         P1 = CameraPose.calculate_projection_matrix(R1, t1, initial_matches.K1)
         P2 = CameraPose.calculate_projection_matrix(R2, t2, initial_matches.K2)
         p3d = np.array([CameraPose.triangulate_point(pts1, pts2, P1, P2) for pts1, pts2 in zip(p1, p2)])
+        p3d = CameraPose.non_linear_triangulation(p3d[:, :3], p1, p2, P1, P2)
+
+        print_reprojection_error(p3d, p1, p2, P1, P2)
 
         R2, _ = cv2.Rodrigues(R2)
 
@@ -271,7 +277,10 @@ class SFMRunner:
 
             # Triangulate new 3D points and add to the global list
             p3d = np.array([CameraPose.triangulate_point(pts1, pts2, P1, P2) for pts1, pts2 in zip(p1, p2)])
+            p3d = CameraPose.non_linear_triangulation(p3d[:, :3], p1, p2, P1, P2)
             self.add_points(p3d, p2, current_frame)
+
+            print_reprojection_error(p3d, p1, p2, P1, P2)
 
             # Keep track of poses and K intrinsics
             R3, _ = cv2.Rodrigues(R3)
@@ -334,7 +343,7 @@ class SFMRunner:
             K2 = CameraPose.construct_K("{}/{}.jpg".format(self.img_path, i2), self.camera_sensor)
 
         srunner = FeatureRunner("{}/{}.jpg".format(self.img_path, i1), "{}/{}.jpg".format(self.img_path, i2),
-                                feature_extractor_class=ScaleRotInvSIFT, extractor_params=self.extractor_params,
+                                feature_extractor_class=self.feature_extractor_class, extractor_params=self.extractor_params,
                                 match_threshold=self.match_threshold)
         p1, p2 = _convert_matches_to_coords(srunner.matches, srunner.X1, srunner.Y1, srunner.X2, srunner.Y2, 2500)
 
