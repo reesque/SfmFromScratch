@@ -1,6 +1,5 @@
 import matplotlib
 
-from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 from PoseEstimator import PnPRansac
 from Runner import SFMRunner
 from sys import platform
@@ -8,6 +7,7 @@ from sys import platform
 from SFM import SensorType
 
 from FeatureExtractor.SuperPoint.SuperPoint import SuperPoint
+from FeatureExtractor.SIFT.ScaleRotInvSIFT import ScaleRotInvSIFT
 
 
 def main():
@@ -33,6 +33,7 @@ def main():
     # SuperPoint
     #########################
     extractor_params = {}
+
     SFMRunner("test_data/tallneck2_mini", 5, feature_extractor_class=SuperPoint, extractor_params=extractor_params,
               match_threshold=0.85, pose_estimator=PnPRansac, camera_sensor=SensorType.CROP_FRAME, model_name=model_name)
 
