@@ -1,5 +1,4 @@
 import matplotlib
-import numpy as np
 
 from PoseEstimator import PnPRansac
 from Runner import SFMRunner
@@ -21,7 +20,7 @@ def main():
         'pyramid_scale_factor': 1.1
     }
 
-    SFMRunner("test_data/tallneck2_mini", 5, extractor_params, match_threshold=0.85,
+    SFMRunner("test_data/tallneck2_mini", 6, extractor_params, match_threshold=0.85,
               pose_estimator=PnPRansac, model_name=model_name, camera_sensor=SensorType.CROP_FRAME)
     SFMRunner.load(model_name)
     
