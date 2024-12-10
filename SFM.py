@@ -423,7 +423,7 @@ class BundleAdjustment:
             initial_params,
             args=(self.num_cameras, self.num_points, self.camera_indices, self.point_indices, self.points_2d, self.K_list),
             verbose=2,
-            ftol=1e-6,
+            ftol=1e-2,
             jac='2-point',  # Sparse Jacobian approximation
             method='trf',  # Trust-region reflective
         )

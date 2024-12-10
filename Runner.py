@@ -170,7 +170,6 @@ class SFMRunner:
         self.ransac_max_it = CameraPose.calculate_num_ransac_iterations(0.98, 8, 0.4)
         self.all_matches: list[list[Matches | None]] = [[None for _ in range(self.max_img + 1)] for _ in
                                                         range(self.max_img + 1)]
-        self.global_reprojection_error = []
 
         # Lock for threading
         self.lock = Lock()
