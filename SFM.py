@@ -253,6 +253,42 @@ class CameraPose:
         return X[:3]  # Return 3D point (X, Y, Z)
 
     @staticmethod
+    def non_linear_triangulation(p3d, p1, p2, P1, P2):
+        def global_reprojection_error(flat_p3d, p1, p2, P1, P2):
+            # Reshape the flat array into a 3D points array
+            p3d = flat_p3d.reshape(-1, 3)
+
+            errors = []
+            for i, (pts1, pts2) in enumerate(zip(p1, p2)):
+                X = np.hstack([p3d[i], 1])  # Convert to homogeneous coordinates
+                x1_reprojected = P1 @ X
+                x2_reprojected = P2 @ X
+                x1_reprojected /= x1_reprojected[2]  # Normalize
+                x2_reprojected /= x2_reprojected[2]  # Normalize
+
+                # Calculate reprojection error for both cameras
+                error1 = pts1 - x1_reprojected[:2]
+                error2 = pts2 - x2_reprojected[:2]
+                errors.extend(error1)
+                errors.extend(error2)
+
+            return np.array(errors)
+
+        flat_p3d_initial = p3d.reshape(-1)
+
+        # Minimize the global reprojection error
+        result = least_squares(
+            global_reprojection_error,
+            flat_p3d_initial,
+            args=(p1, p2, P1, P2),
+            method='lm'  # Levenberg-Marquardt
+        )
+
+        # Reshape the optimized 3D points back to original shape
+        optimized_p3d = result.x.reshape(-1, 3)
+        return optimized_p3d
+
+    @staticmethod
     def triangulate_points(x1, x2, P1, P2):
         n = x1.shape[0]
         pts1_hom, T1 = CameraPose.normalize_points(np.hstack([x1, np.ones((n, 1))]))
@@ -397,6 +433,11 @@ class BundleAdjustment:
         optimized_points_3d = result.x[self.num_cameras * 6:].reshape((self.num_points, 3))
 
         return optimized_camera_params, optimized_points_3d
+
+    def project_point(self, point_3d, R, t, K):
+        point_cam = R @ point_3d + t
+        point_proj = K @ point_cam
+        return point_proj[:2] / point_proj[2]
 
     def compute_residuals(self, params, num_cameras, num_points, camera_indices, point_indices, points_2d, K_list):
         # 6 params in total for each camera, 3 for Rotation, 3 for translation

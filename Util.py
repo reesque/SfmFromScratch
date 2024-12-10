@@ -1,5 +1,6 @@
 import os
 import cv2
+import numpy as np
 from PIL import Image
 
 
@@ -60,3 +61,22 @@ def fast_resize(input_folder, output_folder, ratio=0.3, exif=True):
             print(f"Skipped non-image file: {filename}")
 
     print("All images processed.")
+
+def print_reprojection_error(p3d, p1, p2, P1, P2):
+    # Compute reprojection error for each triangulated point
+    reprojection_errors = []
+    for i, (pts1, pts2) in enumerate(zip(p1, p2)):
+        X = np.hstack([p3d[i], 1])  # Convert to homogeneous coordinates
+        x1_reprojected = P1 @ X
+        x2_reprojected = P2 @ X
+        x1_reprojected /= x1_reprojected[2]  # Normalize
+        x2_reprojected /= x2_reprojected[2]  # Normalize
+
+        # Calculate reprojection error
+        error1 = np.linalg.norm(pts1 - x1_reprojected[:2])
+        error2 = np.linalg.norm(pts2 - x2_reprojected[:2])
+        reprojection_errors.append((error1, error2))
+
+    # Optionally, print or log the mean reprojection error
+    mean_error = np.mean([np.mean(errors) for errors in reprojection_errors])
+    print(f"Mean Reprojection Error: {mean_error:.4f}")
